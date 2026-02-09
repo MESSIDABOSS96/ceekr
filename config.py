@@ -10,7 +10,7 @@ load_dotenv()
 
 # Project paths
 PROJECT_ROOT = Path(__file__).parent
-COOKIES_FILE = PROJECT_ROOT / "cookies.txt"
+COOKIES_FILE = PROJECT_ROOT / "cookies.json"
 
 # Anthropic settings
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
@@ -50,7 +50,7 @@ def validate_config() -> list[str]:
     if not COOKIES_FILE.exists():
         errors.append(
             f"Twitter cookies not found at {COOKIES_FILE}. "
-            "Export your Twitter cookies using a browser extension."
+            "Export your Twitter cookies and convert to JSON format."
         )
 
     return errors
