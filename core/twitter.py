@@ -1,209 +1,120 @@
-"""Twitter data layer using twikit."""
+"""Twitter data layer using SocialData.tools API."""
 
 import asyncio
-import time
-from datetime import datetime
-from pathlib import Path
+import traceback
 from typing import Optional
 
+import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
-from twikit import Client
 
-from config import COOKIES_FILE, REQUEST_DELAY, TWEETS_PER_QUERY
+from config import SOCIALDATA_API_KEY, TWEETS_PER_QUERY
 
 from .models import NetworkInfo, Tweet, TwitterAccount
 
 
 class TwitterClient:
-    """Wrapper around twikit for Twitter data access."""
+    """Wrapper around SocialData.tools API for Twitter data access."""
 
-    def __init__(self, cookies_file: Path = COOKIES_FILE):
+    def __init__(self):
         """Initialize the Twitter client."""
-        self.cookies_file = cookies_file
-        self.client: Optional[Client] = None
-        self._following_cache: Optional[set[str]] = None
-        self._followers_cache: Optional[set[str]] = None
-        self._my_user_id: Optional[str] = None
+        self.api_key = SOCIALDATA_API_KEY
+        self.base_url = "https://api.socialdata.tools"
+        self._http_client: Optional[httpx.AsyncClient] = None
 
     async def initialize(self) -> None:
-        """Initialize and authenticate the client."""
-        if self.client is not None:
+        """Initialize the HTTP client."""
+        if self._http_client is not None:
             return
 
-        self.client = Client("en-US")
-
-        # Load cookies from file
-        if not self.cookies_file.exists():
-            raise FileNotFoundError(
-                f"Cookies file not found at {self.cookies_file}. "
-                "Please export your Twitter cookies using a browser extension."
+        if not self.api_key:
+            raise ValueError(
+                "SOCIALDATA_API_KEY not set. "
+                "Sign up at https://socialdata.tools and add your key to .env"
             )
 
-        # twikit expects cookies in Netscape format or JSON
-        self.client.load_cookies(str(self.cookies_file))
+        self._http_client = httpx.AsyncClient(
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json",
+            },
+            timeout=30.0,
+        )
 
     async def _ensure_initialized(self) -> None:
         """Ensure the client is initialized."""
-        if self.client is None:
+        if self._http_client is None:
             await self.initialize()
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def search_tweets(self, query: str, count: int = TWEETS_PER_QUERY) -> list[dict]:
+    async def search_tweets(
+        self, query: str, count: int = TWEETS_PER_QUERY, search_type: str = "Top"
+    ) -> list[dict]:
         """
         Search for tweets matching a query.
+
+        Args:
+            query: Twitter search query string
+            count: Max tweets to return
+            search_type: "Top" or "Latest"
 
         Returns list of tweet data with author info.
         """
         await self._ensure_initialized()
 
-        # Add delay to avoid rate limiting
-        await asyncio.sleep(REQUEST_DELAY)
-
         try:
-            # Search for tweets (Top results, not Latest)
-            tweets = await self.client.search_tweet(query, "Top", count=count)
+            response = await self._http_client.get(
+                f"{self.base_url}/twitter/search",
+                params={"query": query, "type": search_type},
+            )
+            response.raise_for_status()
+            data = response.json()
 
             results = []
-            for tweet in tweets:
-                # Extract tweet and user data
+            tweets = data.get("tweets", [])
+
+            for tweet_obj in tweets[:count]:
+                user = tweet_obj.get("user", {})
+
                 tweet_data = {
                     "tweet": {
-                        "id": tweet.id,
-                        "text": tweet.text,
-                        "created_at": tweet.created_at,
-                        "like_count": tweet.favorite_count or 0,
-                        "retweet_count": tweet.retweet_count or 0,
-                        "reply_count": tweet.reply_count or 0,
+                        "id": tweet_obj.get("id_str", ""),
+                        "text": tweet_obj.get("full_text", ""),
+                        "created_at": tweet_obj.get("created_at"),
+                        "like_count": tweet_obj.get("favorite_count", 0),
+                        "retweet_count": tweet_obj.get("retweet_count", 0),
+                        "reply_count": tweet_obj.get("reply_count", 0),
                     },
                     "user": {
-                        "user_id": tweet.user.id,
-                        "handle": tweet.user.screen_name,
-                        "name": tweet.user.name,
-                        "bio": tweet.user.description,
-                        "followers_count": tweet.user.followers_count or 0,
-                        "following_count": tweet.user.friends_count or 0,
-                        "tweet_count": tweet.user.statuses_count or 0,
-                        "profile_image_url": tweet.user.profile_image_url,
+                        "user_id": user.get("id_str", ""),
+                        "handle": user.get("screen_name", ""),
+                        "name": user.get("name", ""),
+                        "bio": user.get("description", ""),
+                        "followers_count": user.get("followers_count", 0),
+                        "following_count": user.get("friends_count", 0),
+                        "tweet_count": user.get("statuses_count", 0),
+                        "profile_image_url": user.get("profile_image_url_https", ""),
+                        "location": user.get("location", ""),
+                        "verified": user.get("verified", False) or user.get("is_blue_verified", False),
+                        "created_at": user.get("created_at"),
                     },
                 }
                 results.append(tweet_data)
 
             return results
 
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error searching tweets for query '{query}': {e.response.status_code} {e.response.text}")
+            raise
         except Exception as e:
-            print(f"Error searching tweets: {e}")
+            print(f"Error searching tweets for query '{query}': {e}")
             raise
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def get_user_tweets(self, user_id: str, count: int = 5) -> list[Tweet]:
-        """Fetch recent tweets from a user."""
-        await self._ensure_initialized()
-        await asyncio.sleep(REQUEST_DELAY)
-
-        try:
-            user = await self.client.get_user_by_id(user_id)
-            tweets = await user.get_tweets("Tweets", count=count)
-
-            return [
-                Tweet(
-                    id=t.id,
-                    text=t.text,
-                    created_at=t.created_at,
-                    like_count=t.favorite_count or 0,
-                    retweet_count=t.retweet_count or 0,
-                    reply_count=t.reply_count or 0,
-                )
-                for t in tweets
-            ]
-        except Exception as e:
-            print(f"Error getting user tweets: {e}")
-            return []
-
-    async def get_my_following(self, force_refresh: bool = False) -> set[str]:
-        """
-        Get set of user IDs that I follow.
-
-        Results are cached for the session.
-        """
-        if self._following_cache is not None and not force_refresh:
-            return self._following_cache
-
-        await self._ensure_initialized()
-
-        try:
-            # Get my user info first
-            me = await self.client.user()
-            self._my_user_id = me.id
-
-            # Get following list
-            following = set()
-            cursor = None
-
-            # Paginate through following list (limit to avoid rate limits)
-            for _ in range(10):  # Max 10 pages (~2000 users)
-                await asyncio.sleep(REQUEST_DELAY)
-                result = await me.get_following(cursor=cursor)
-
-                for user in result:
-                    following.add(user.id)
-
-                if not hasattr(result, "next_cursor") or not result.next_cursor:
-                    break
-                cursor = result.next_cursor
-
-            self._following_cache = following
-            return following
-
-        except Exception as e:
-            print(f"Error getting following list: {e}")
-            return set()
-
-    async def get_my_followers(self, force_refresh: bool = False) -> set[str]:
-        """
-        Get set of user IDs that follow me.
-
-        Results are cached for the session.
-        """
-        if self._followers_cache is not None and not force_refresh:
-            return self._followers_cache
-
-        await self._ensure_initialized()
-
-        try:
-            me = await self.client.user()
-            self._my_user_id = me.id
-
-            # Get followers list
-            followers = set()
-            cursor = None
-
-            for _ in range(10):  # Max 10 pages
-                await asyncio.sleep(REQUEST_DELAY)
-                result = await me.get_followers(cursor=cursor)
-
-                for user in result:
-                    followers.add(user.id)
-
-                if not hasattr(result, "next_cursor") or not result.next_cursor:
-                    break
-                cursor = result.next_cursor
-
-            self._followers_cache = followers
-            return followers
-
-        except Exception as e:
-            print(f"Error getting followers list: {e}")
-            return set()
-
     async def check_network_status(self, user_id: str) -> NetworkInfo:
-        """Check network relationship with a user."""
-        following = await self.get_my_following()
-        followers = await self.get_my_followers()
-
+        """Check network relationship with a user (not available via SocialData)."""
         return NetworkInfo(
-            you_follow=user_id in following,
-            follows_you=user_id in followers,
-            mutual_followers=[],  # Skip mutual detection for v1
+            you_follow=False,
+            follows_you=False,
+            mutual_followers=[],
         )
 
 
@@ -213,69 +124,80 @@ class SearchOrchestrator:
     def __init__(self, twitter_client: TwitterClient):
         self.client = twitter_client
 
+    async def _run_single_query(self, query, search_type, status_callback):
+        """Execute a single search query and return raw results."""
+        if status_callback:
+            await status_callback(f"Searching: {query[:50]}...")
+        try:
+            results = await self.client.search_tweets(query, search_type=search_type)
+            return query, results
+        except Exception as e:
+            print(f"Error executing query '{query}': {e}")
+            traceback.print_exc()
+            if status_callback:
+                await status_callback(f"Query failed: {query[:40]}... ({e})")
+            return query, []
+
     async def execute_searches(
-        self, queries: list[str], status_callback=None
+        self, queries: list[str], status_callback=None, exclude_user_ids: set[str] | None = None,
     ) -> list[TwitterAccount]:
         """
-        Execute multiple search queries and return deduplicated accounts.
+        Execute multiple search queries in parallel and return deduplicated accounts.
 
         Args:
             queries: List of Twitter search query strings
             status_callback: Optional async function to call with status updates
+            exclude_user_ids: Optional set of user IDs to skip (for "Find More")
 
         Returns:
             List of unique TwitterAccount objects with network info
         """
-        # Track unique users by ID
+        # Build tasks — last query uses "Latest"
+        tasks = []
+        for i, query in enumerate(queries):
+            search_type = "Latest" if i == len(queries) - 1 else "Top"
+            tasks.append(self._run_single_query(query, search_type, status_callback))
+
+        # Fire all queries in parallel
+        results_list = await asyncio.gather(*tasks)
+
+        # Merge results with dedup
         users_by_id: dict[str, dict] = {}
         tweets_by_user: dict[str, list[Tweet]] = {}
         queries_by_user: dict[str, list[str]] = {}
 
-        # Execute all queries
-        for i, query in enumerate(queries):
-            if status_callback:
-                await status_callback(f"Searching: {query[:50]}...")
+        for query, results in results_list:
+            for result in results:
+                user_data = result["user"]
+                tweet_data = result["tweet"]
+                user_id = user_data["user_id"]
 
-            try:
-                results = await self.client.search_tweets(query)
+                if exclude_user_ids and user_id in exclude_user_ids:
+                    continue
 
-                for result in results:
-                    user_data = result["user"]
-                    tweet_data = result["tweet"]
-                    user_id = user_data["user_id"]
+                if user_id not in users_by_id:
+                    users_by_id[user_id] = user_data
+                    tweets_by_user[user_id] = []
+                    queries_by_user[user_id] = []
 
-                    # Store/update user data
-                    if user_id not in users_by_id:
-                        users_by_id[user_id] = user_data
-                        tweets_by_user[user_id] = []
-                        queries_by_user[user_id] = []
+                tweet = Tweet(
+                    id=tweet_data["id"],
+                    text=tweet_data["text"],
+                    created_at=tweet_data.get("created_at"),
+                    like_count=tweet_data.get("like_count", 0),
+                    retweet_count=tweet_data.get("retweet_count", 0),
+                    reply_count=tweet_data.get("reply_count", 0),
+                )
+                tweets_by_user[user_id].append(tweet)
 
-                    # Add tweet
-                    tweet = Tweet(
-                        id=tweet_data["id"],
-                        text=tweet_data["text"],
-                        created_at=tweet_data.get("created_at"),
-                        like_count=tweet_data.get("like_count", 0),
-                        retweet_count=tweet_data.get("retweet_count", 0),
-                        reply_count=tweet_data.get("reply_count", 0),
-                    )
-                    tweets_by_user[user_id].append(tweet)
-
-                    # Track which query found this user
-                    if query not in queries_by_user[user_id]:
-                        queries_by_user[user_id].append(query)
-
-            except Exception as e:
-                print(f"Error executing query '{query}': {e}")
-                continue
+                if query not in queries_by_user[user_id]:
+                    queries_by_user[user_id].append(query)
 
         if status_callback:
             await status_callback(f"Found {len(users_by_id)} unique accounts, enriching data...")
 
-        # Build TwitterAccount objects with network info
         accounts = []
         for user_id, user_data in users_by_id.items():
-            # Get network status
             network = await self.client.check_network_status(user_id)
 
             account = TwitterAccount(
@@ -288,7 +210,10 @@ class SearchOrchestrator:
                 tweet_count=user_data.get("tweet_count", 0),
                 profile_url=f"https://twitter.com/{user_data['handle']}",
                 profile_image_url=user_data.get("profile_image_url"),
-                recent_tweets=tweets_by_user[user_id][:5],  # Limit to 5 tweets
+                location=user_data.get("location") or None,
+                verified=user_data.get("verified", False),
+                created_at=user_data.get("created_at"),
+                recent_tweets=tweets_by_user[user_id][:5],
                 matched_queries=queries_by_user[user_id],
                 network=network,
             )

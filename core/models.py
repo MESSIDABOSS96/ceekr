@@ -26,14 +26,20 @@ class ClarificationQuestion(BaseModel):
     reason: str = Field(..., description="Why this clarification is needed")
 
 
-class ClarificationResponse(BaseModel):
-    """Response from clarity check - either clear or needs clarification."""
+class SearchIntent(BaseModel):
+    """Structured decomposition of the user's search request."""
 
-    is_clear: bool = Field(..., description="Whether the input is clear enough to proceed")
+    is_clear: bool = Field(..., description="Can we meaningfully search? (False only for specificity=1)")
     questions: list[ClarificationQuestion] = Field(
         default_factory=list,
-        description="Questions to ask if input is not clear (empty if clear)",
+        description="If not clear, what to ask",
     )
+    persona: str = Field("", description="e.g. 'early-stage SaaS founders'")
+    topic: str = Field("", description="e.g. 'customer discovery challenges'")
+    goal: str = Field("", description="e.g. 'find people to validate product idea with'")
+    specificity: int = Field(3, ge=1, le=5, description="1=very broad, 5=very specific")
+    suggested_query_count: int = Field(5, ge=3, le=7, description="3-7 based on specificity")
+    min_score_threshold: int = Field(4, ge=1, le=7, description="Minimum score to show")
 
 
 class SearchQuery(BaseModel):
@@ -48,7 +54,7 @@ class SearchQueriesResponse(BaseModel):
     """Response containing generated search queries."""
 
     queries: list[SearchQuery] = Field(
-        ..., description="List of 3-5 search queries from different angles"
+        ..., description="List of search queries from different angles"
     )
 
 
@@ -86,6 +92,9 @@ class TwitterAccount(BaseModel):
     tweet_count: int = Field(0, description="Total number of tweets")
     profile_url: str = Field(..., description="URL to their Twitter profile")
     profile_image_url: Optional[str] = Field(None, description="URL to profile image")
+    location: Optional[str] = Field(None, description="Profile location")
+    verified: bool = Field(False, description="Whether the account is verified")
+    created_at: Optional[datetime] = Field(None, description="When the account was created")
 
     # Activity data
     recent_tweets: list[Tweet] = Field(
@@ -107,10 +116,10 @@ class RankedAccount(BaseModel):
 
     account: TwitterAccount = Field(..., description="The Twitter account")
     relevance_score: float = Field(
-        ..., ge=0, le=15, description="Overall relevance score (0-15)"
+        ..., ge=1, le=10, description="Relevance score (1-10)"
     )
-    base_score: float = Field(
-        ..., ge=0, le=10, description="Base content relevance score (0-10)"
+    score_reasoning: str = Field(
+        ..., description="1 sentence explaining what drove this score"
     )
     why_relevant: str = Field(
         ..., description="1-2 sentence explanation of why this person is relevant"
@@ -125,4 +134,11 @@ class RankingResponse(BaseModel):
 
     ranked_accounts: list[RankedAccount] = Field(
         ..., description="Accounts sorted by relevance score (highest first)"
+    )
+    result_quality: str = Field(
+        "moderate", description="Overall quality: 'strong', 'moderate', or 'weak'"
+    )
+    refinement_questions: list[str] = Field(
+        default_factory=list,
+        description="1-2 clarifying questions if quality is weak",
     )

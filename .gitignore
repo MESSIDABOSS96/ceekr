@@ -41,5 +41,10 @@ wheels/
 .DS_Store
 Thumbs.db
 
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+
 # Project specific
 *.log

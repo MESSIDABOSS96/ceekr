@@ -1,0 +1,105 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/inter/v18/UcCo3FwrK3iLTcviYwY.woff2")
+    format("woff2");
+  unicode-range: U+0000-00FF;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+
+  /* Custom design tokens — use oklch for opacity modifier support */
+  --color-surface: oklch(0.17 0.004 163);
+  --color-surface-card: oklch(0.19 0.004 163);
+  --color-surface-tweet: oklch(0.16 0.004 163);
+  --color-text-primary: oklch(0.93 0 0);
+  --color-text-secondary: oklch(0.61 0 0);
+  --color-text-muted: oklch(0.49 0 0);
+  --color-text-body: oklch(0.8 0 0);
+  --color-twitter: oklch(0.65 0.155 241);
+  --color-border-subtle: oklch(1 0 0 / 8%);
+  --color-score-high: oklch(0.67 0.155 163);
+  --color-score-mid: oklch(0.75 0.163 70);
+  --color-quality-strong: oklch(0.67 0.155 163);
+  --color-quality-moderate: oklch(0.75 0.163 70);
+  --color-quality-weak: oklch(0.58 0.22 27);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(0.14 0.004 163);
+  --foreground: oklch(0.93 0 0);
+  --card: oklch(0.19 0.004 163);
+  --card-foreground: oklch(0.93 0 0);
+  --popover: oklch(0.19 0.004 163);
+  --popover-foreground: oklch(0.93 0 0);
+  --primary: oklch(0.93 0 0);
+  --primary-foreground: oklch(0.14 0.004 163);
+  --secondary: oklch(0.17 0.004 163);
+  --secondary-foreground: oklch(0.93 0 0);
+  --muted: oklch(0.17 0.004 163);
+  --muted-foreground: oklch(0.61 0 0);
+  --accent: oklch(0.65 0.155 241);
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.58 0.22 27);
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 8%);
+  --ring: oklch(0.65 0.155 241);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
