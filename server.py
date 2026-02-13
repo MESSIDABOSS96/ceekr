@@ -4,11 +4,26 @@ import asyncio
 import json
 import traceback
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from sse_starlette.sse import EventSourceResponse
 
-from config import validate_config
+from config import (
+    TWITTER_CLIENT_ID,
+    TWITTER_CLIENT_SECRET,
+    TWITTER_REDIRECT_URI,
+    is_oauth_configured,
+    validate_config,
+)
+from core.auth import (
+    create_auth_url,
+    create_session,
+    delete_session,
+    exchange_code,
+    fetch_twitter_user,
+    get_session,
+)
 from core.llm import LLMClient
 from core.twitter import SearchOrchestrator, TwitterClient
 
@@ -26,6 +41,111 @@ app.add_middleware(
 async def health():
     errors = validate_config()
     return {"ok": len(errors) == 0, "errors": errors}
+
+
+# ── Auth endpoints ──────────────────────────────────────────
+
+
+@app.get("/api/auth/config")
+async def auth_config():
+    return {"oauth_enabled": is_oauth_configured()}
+
+
+@app.get("/api/auth/twitter")
+async def auth_twitter():
+    if not is_oauth_configured():
+        return {"error": "OAuth not configured"}
+    url, _state = create_auth_url(TWITTER_CLIENT_ID, TWITTER_REDIRECT_URI)
+    return RedirectResponse(url)
+
+
+@app.get("/api/auth/twitter/callback")
+async def auth_twitter_callback(code: str, state: str):
+    try:
+        token_data = await exchange_code(
+            code=code,
+            state=state,
+            client_id=TWITTER_CLIENT_ID,
+            client_secret=TWITTER_CLIENT_SECRET,
+            redirect_uri=TWITTER_REDIRECT_URI,
+        )
+        access_token = token_data["access_token"]
+        user = await fetch_twitter_user(access_token)
+        session_token = create_session(user, access_token)
+
+        # Start background network fetch
+        asyncio.create_task(_fetch_network_background(session_token, user.user_id))
+
+        return RedirectResponse(f"http://localhost:3000?auth_token={session_token}")
+    except Exception as e:
+        traceback.print_exc()
+        return RedirectResponse(f"http://localhost:3000?auth_error={e}")
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    token = request.headers.get("x-session-token")
+    if not token:
+        return {"authenticated": False}
+    session = get_session(token)
+    if not session:
+        return {"authenticated": False}
+    return {
+        "authenticated": True,
+        "user": {
+            "user_id": session.user.user_id,
+            "handle": session.user.handle,
+            "name": session.user.name,
+            "profile_image_url": session.user.profile_image_url,
+        },
+        "network_loaded": session.network.loaded,
+        "network_loading": session.network.loading,
+    }
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    token = request.headers.get("x-session-token")
+    if token:
+        delete_session(token)
+    return {"ok": True}
+
+
+async def _fetch_network_background(session_token: str, user_id: str):
+    """Background task to fetch the user's follow lists."""
+    session = get_session(session_token)
+    if not session:
+        return
+
+    session.network.loading = True
+    try:
+        twitter = TwitterClient()
+        await twitter.initialize()
+
+        following, followers = await asyncio.gather(
+            twitter.fetch_follow_list(user_id, "following", max_count=1000),
+            twitter.fetch_follow_list(user_id, "followers", max_count=1000),
+        )
+        session.network.following_ids = following
+        session.network.follower_ids = followers
+        session.network.loaded = True
+        print(f"Network loaded for @{session.user.handle}: {len(following)} following, {len(followers)} followers")
+    except Exception as e:
+        print(f"Error fetching network for @{session.user.handle}: {e}")
+        traceback.print_exc()
+    finally:
+        session.network.loading = False
+
+
+def require_auth(request: Request):
+    """Require a valid session token. Returns the session or raises 401."""
+    token = request.headers.get("x-session-token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    session = get_session(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return session
 
 
 def _serialize_account(ranked):
@@ -70,6 +190,7 @@ def _serialize_account(ranked):
 
 @app.post("/api/chat")
 async def chat(request: Request):
+    require_auth(request)
     body = await request.json()
     messages = body.get("messages", [])
     filters = body.get("filters", {})
@@ -98,9 +219,7 @@ async def chat(request: Request):
 
     try:
         llm = LLMClient()
-        result = await asyncio.to_thread(
-            llm.chat_respond, messages, filters_summary, results_summary
-        )
+        result = await llm.chat_respond(messages, filters_summary, results_summary)
         return result
     except Exception as e:
         traceback.print_exc()
@@ -109,6 +228,7 @@ async def chat(request: Request):
 
 @app.post("/api/search")
 async def search(request: Request):
+    session = require_auth(request)
     body = await request.json()
     query = body.get("query", "").strip()
     exclude_user_ids = set(body.get("exclude_user_ids", []))
@@ -118,6 +238,8 @@ async def search(request: Request):
             yield {"event": "error", "data": json.dumps({"message": "Query is required"})}
         return EventSourceResponse(error_stream())
 
+    user_network = session.network if session.network.loaded else None
+
     async def event_stream():
         try:
             llm = LLMClient()
@@ -126,7 +248,7 @@ async def search(request: Request):
             # Step 1: Extract intent
             yield {"event": "progress", "data": json.dumps({"message": "Analyzing your request..."})}
 
-            intent = await asyncio.to_thread(llm.extract_intent, query, None)
+            intent = await llm.extract_intent(query, None)
 
             yield {
                 "event": "intent",
@@ -149,7 +271,7 @@ async def search(request: Request):
             # Step 2: Generate queries
             yield {"event": "progress", "data": json.dumps({"message": "Generating search strategies..."})}
 
-            queries_response = await asyncio.to_thread(llm.generate_search_queries, intent)
+            queries_response = await llm.generate_search_queries(intent)
 
             if not queries_response.queries:
                 yield {"event": "error", "data": json.dumps({"message": "Failed to generate search queries"})}
@@ -174,7 +296,11 @@ async def search(request: Request):
             query_strings = [q.query for q in queries_response.queries]
 
             search_task = asyncio.create_task(
-                orchestrator.execute_searches(query_strings, status_callback, exclude_user_ids=exclude_user_ids or None)
+                orchestrator.execute_searches(
+                    query_strings, status_callback,
+                    exclude_user_ids=exclude_user_ids or None,
+                    user_network=user_network,
+                )
             )
 
             # Drain progress messages while search runs
@@ -202,7 +328,7 @@ async def search(request: Request):
                 "data": json.dumps({"message": f"Found {len(accounts)} accounts, analyzing relevance..."}),
             }
 
-            ranking = await llm.rank_accounts_parallel(intent, accounts)
+            ranking = await llm.rank_accounts(intent, accounts, user_network=user_network)
 
             yield {
                 "event": "results",

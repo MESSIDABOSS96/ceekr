@@ -1,8 +1,10 @@
 """Twitter data layer using SocialData.tools API."""
 
+from __future__ import annotations
+
 import asyncio
 import traceback
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -10,6 +12,9 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from config import SOCIALDATA_API_KEY, TWEETS_PER_QUERY
 
 from .models import NetworkInfo, Tweet, TwitterAccount
+
+if TYPE_CHECKING:
+    from .auth import UserNetwork
 
 
 class TwitterClient:
@@ -109,13 +114,55 @@ class TwitterClient:
             print(f"Error searching tweets for query '{query}': {e}")
             raise
 
-    async def check_network_status(self, user_id: str) -> NetworkInfo:
-        """Check network relationship with a user (not available via SocialData)."""
-        return NetworkInfo(
-            you_follow=False,
-            follows_you=False,
-            mutual_followers=[],
-        )
+    async def fetch_follow_list(
+        self, user_id: str, list_type: str = "following", max_count: int = 1000,
+    ) -> set[str]:
+        """
+        Fetch a user's following or followers list via SocialData API.
+
+        Args:
+            user_id: Twitter user ID
+            list_type: "following" or "followers"
+            max_count: Maximum IDs to collect (capped at 1000)
+
+        Returns set of user ID strings.
+        """
+        await self._ensure_initialized()
+
+        endpoint = "friends" if list_type == "following" else "followers"
+        url = f"{self.base_url}/twitter/{endpoint}/list"
+        ids: set[str] = set()
+        cursor: str | None = None
+
+        while len(ids) < max_count:
+            params: dict[str, str] = {"user_id": user_id}
+            if cursor:
+                params["cursor"] = cursor
+
+            try:
+                response = await self._http_client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+
+                users = data.get("users", [])
+                if not users:
+                    break
+
+                for u in users:
+                    ids.add(str(u.get("id_str", u.get("id", ""))))
+                    if len(ids) >= max_count:
+                        break
+
+                cursor = data.get("next_cursor_str") or data.get("next_cursor")
+                if not cursor or cursor == "0":
+                    break
+
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                print(f"Error fetching {list_type} for {user_id}: {e}")
+                break
+
+        return ids
 
 
 class SearchOrchestrator:
@@ -140,6 +187,7 @@ class SearchOrchestrator:
 
     async def execute_searches(
         self, queries: list[str], status_callback=None, exclude_user_ids: set[str] | None = None,
+        user_network=None,
     ) -> list[TwitterAccount]:
         """
         Execute multiple search queries in parallel and return deduplicated accounts.
@@ -198,7 +246,17 @@ class SearchOrchestrator:
 
         accounts = []
         for user_id, user_data in users_by_id.items():
-            network = await self.client.check_network_status(user_id)
+            # Build network info from user_network if available, otherwise default
+            if user_network:
+                you_follow = user_id in user_network.following_ids
+                follows_you = user_id in user_network.follower_ids
+                network = NetworkInfo(
+                    you_follow=you_follow,
+                    follows_you=follows_you,
+                    mutual_followers=[],
+                )
+            else:
+                network = NetworkInfo()
 
             account = TwitterAccount(
                 user_id=user_id,

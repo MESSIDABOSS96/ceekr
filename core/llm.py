@@ -1,6 +1,5 @@
 """LLM layer for Claude API calls."""
 
-import asyncio
 import json
 from typing import Optional
 
@@ -28,11 +27,11 @@ class LLMClient:
     """Client for Claude API calls with structured output."""
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self.client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         self.model = ANTHROPIC_MODEL
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def extract_intent(self, who: str, why: Optional[str] = None) -> SearchIntent:
+    async def extract_intent(self, who: str, why: Optional[str] = None) -> SearchIntent:
         """
         Extract structured intent from user input.
 
@@ -115,7 +114,7 @@ class LLMClient:
 
         prompt = format_intent_prompt(who, why)
 
-        response = self.client.messages.create(
+        response = await self.client.messages.create(
             model=self.model,
             max_tokens=1024,
             tools=tools,
@@ -144,7 +143,7 @@ class LLMClient:
         return SearchIntent(is_clear=True, questions=[])
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def generate_search_queries(self, intent: SearchIntent) -> SearchQueriesResponse:
+    async def generate_search_queries(self, intent: SearchIntent) -> SearchQueriesResponse:
         """
         Generate Twitter search queries based on structured intent.
 
@@ -191,7 +190,7 @@ class LLMClient:
 
         prompt = format_query_prompt(intent)
 
-        response = self.client.messages.create(
+        response = await self.client.messages.create(
             model=self.model,
             max_tokens=2048,
             tools=tools,
@@ -216,10 +215,11 @@ class LLMClient:
         return SearchQueriesResponse(queries=[])
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def rank_accounts(
+    async def rank_accounts(
         self,
         intent: SearchIntent,
         accounts: list[TwitterAccount],
+        user_network=None,
     ) -> RankingResponse:
         """
         Rank accounts by relevance to the user's search intent.
@@ -228,6 +228,18 @@ class LLMClient:
         """
         accounts_data = []
         for acc in accounts:
+            # Determine network match type if user_network is available
+            network_match = None
+            if user_network:
+                you_follow = acc.user_id in user_network.following_ids
+                follows_you = acc.user_id in user_network.follower_ids
+                if you_follow and follows_you:
+                    network_match = "mutual"
+                elif you_follow:
+                    network_match = "you_follow"
+                elif follows_you:
+                    network_match = "follows_you"
+
             account_dict = {
                 "handle": acc.handle,
                 "name": acc.name,
@@ -242,6 +254,8 @@ class LLMClient:
                 ],
                 "matched_query_count": len(acc.matched_queries),
             }
+            if network_match:
+                account_dict["network_match"] = network_match
             accounts_data.append(account_dict)
 
         accounts_json = json.dumps(accounts_data, indent=2)
@@ -306,7 +320,7 @@ class LLMClient:
 
         prompt = format_ranking_prompt(intent, accounts_json)
 
-        response = self.client.messages.create(
+        response = await self.client.messages.create(
             model=self.model,
             max_tokens=4096,
             tools=tools,
@@ -342,47 +356,8 @@ class LLMClient:
 
         return RankingResponse(ranked_accounts=[])
 
-    async def rank_accounts_parallel(
-        self,
-        intent: SearchIntent,
-        accounts: list[TwitterAccount],
-        batch_size: int = 20,
-    ) -> RankingResponse:
-        """Rank accounts in parallel batches for speed."""
-        if len(accounts) <= batch_size:
-            return await asyncio.to_thread(self.rank_accounts, intent, accounts)
-
-        batches = [accounts[i : i + batch_size] for i in range(0, len(accounts), batch_size)]
-        tasks = [asyncio.to_thread(self.rank_accounts, intent, batch) for batch in batches]
-        batch_results = await asyncio.gather(*tasks)
-
-        all_ranked = []
-        for result in batch_results:
-            all_ranked.extend(result.ranked_accounts)
-        all_ranked.sort(key=lambda r: r.relevance_score, reverse=True)
-
-        high_scores = sum(1 for r in all_ranked if r.relevance_score >= 7)
-        mid_scores = sum(1 for r in all_ranked if r.relevance_score >= 5)
-        if high_scores >= 3:
-            quality = "strong"
-        elif mid_scores >= 5:
-            quality = "moderate"
-        else:
-            quality = "weak"
-
-        refinement_questions: list[str] = []
-        if quality == "weak":
-            for result in batch_results:
-                refinement_questions.extend(result.refinement_questions)
-
-        return RankingResponse(
-            ranked_accounts=all_ranked,
-            result_quality=quality,
-            refinement_questions=refinement_questions[:2],
-        )
-
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def chat_respond(
+    async def chat_respond(
         self,
         messages: list[dict],
         filters_summary: str,
@@ -493,7 +468,7 @@ class LLMClient:
                 "content": msg["content"],
             })
 
-        response = self.client.messages.create(
+        response = await self.client.messages.create(
             model=self.model,
             max_tokens=1024,
             system=system_prompt,

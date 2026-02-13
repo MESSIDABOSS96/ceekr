@@ -29,6 +29,9 @@ Factors to weigh (bake into your 1-10 score, do NOT add separate modifiers):
 - Accessibility: >500K followers are hard to engage -> slight penalty
 - Activity: <100 followers may be inactive/bot -> slight penalty
 - Query overlap: appeared in multiple search queries -> likely more relevant
+- Network proximity: if network_match is present, factor it in:
+  - "mutual" (you follow each other): +0.5 point boost — warm connection
+  - "you_follow" or "follows_you": +0.25 point boost — existing relationship
 
 Distribution guidance: most accounts should score 3-6. Only truly exceptional
 matches get 8+. If most accounts score 7+, you are being too generous.

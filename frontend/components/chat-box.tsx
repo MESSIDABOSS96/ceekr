@@ -149,9 +149,9 @@ export function ChatBox({
           <button
             onClick={handleSend}
             disabled={!input.trim() || loading || disabled}
-            className="flex h-8 w-8 items-center justify-center rounded-full bg-twitter text-white transition-opacity hover:opacity-80 disabled:opacity-30"
+            className="flex h-6 w-6 items-center justify-center rounded-full bg-twitter text-white transition-opacity hover:opacity-80 disabled:opacity-30"
           >
-            <ArrowRight className="h-4 w-4" />
+            <ArrowRight className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>

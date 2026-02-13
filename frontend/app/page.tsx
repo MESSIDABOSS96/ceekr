@@ -4,8 +4,6 @@ import { useReducer, useRef, useCallback, useMemo } from "react";
 import { SearchBox } from "@/components/search-box";
 import { FilterChips } from "@/components/filter-chips";
 import { FilterPanel } from "@/components/filter-panel";
-import { ProgressStrip } from "@/components/progress-strip";
-import { ClarificationCard } from "@/components/clarification-card";
 import { ResultCard } from "@/components/result-card";
 import { ChatBox } from "@/components/chat-box";
 import { streamSearch, sendChatMessage } from "@/lib/api";
@@ -221,12 +219,28 @@ export default function Home() {
         {
           onProgress: (message) =>
             dispatch({ type: "PROGRESS", message }),
-          onIntent: (intent) =>
+          onIntent: (intent) => {
             dispatch({
               type: "INTENT",
               is_clear: intent.is_clear,
               questions: intent.questions,
-            }),
+            });
+            if (!intent.is_clear && intent.questions.length > 0) {
+              const lines = intent.questions
+                .map(
+                  (q) => `- ${q.question}\n  ${q.reason}`
+                )
+                .join("\n\n");
+              dispatch({
+                type: "ADD_CHAT_MESSAGE",
+                message: {
+                  id: nextChatId(),
+                  role: "assistant",
+                  content: `I need a bit more context to find the right people.\n\n${lines}`,
+                },
+              });
+            }
+          },
           onQueries: (queries) =>
             dispatch({ type: "QUERIES", queries }),
           onResults: (results) => {
@@ -275,12 +289,31 @@ export default function Home() {
               });
             }
           },
-          onError: (message) => dispatch({ type: "ERROR", message }),
+          onError: (message) => {
+            dispatch({ type: "ERROR", message });
+            dispatch({
+              type: "ADD_CHAT_MESSAGE",
+              message: {
+                id: nextChatId(),
+                role: "assistant",
+                content: `Something went wrong: ${message}`,
+              },
+            });
+          },
         },
         controller.signal,
       ).catch((err) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        dispatch({ type: "ERROR", message: String(err.message || err) });
+        const msg = String(err.message || err);
+        dispatch({ type: "ERROR", message: msg });
+        dispatch({
+          type: "ADD_CHAT_MESSAGE",
+          message: {
+            id: nextChatId(),
+            role: "assistant",
+            content: `Something went wrong: ${msg}`,
+          },
+        });
       });
     },
     [],
@@ -293,10 +326,6 @@ export default function Home() {
       type: "ADD_CHAT_MESSAGE",
       message: { id: nextChatId(), role: "user", content: state.query },
     });
-    doSearch(state.query);
-  }, [state.query, doSearch]);
-
-  const handleClarificationSubmit = useCallback(() => {
     doSearch(state.query);
   }, [state.query, doSearch]);
 
@@ -320,6 +349,14 @@ export default function Home() {
         onError: (message) => {
           dispatch({ type: "STOP_LOAD_MORE" });
           dispatch({ type: "ERROR", message });
+          dispatch({
+            type: "ADD_CHAT_MESSAGE",
+            message: {
+              id: nextChatId(),
+              role: "assistant",
+              content: `Something went wrong while finding more: ${message}`,
+            },
+          });
         },
       },
       undefined,
@@ -495,39 +532,6 @@ export default function Home() {
         results={state.results}
       />
 
-      {/* Error */}
-      {state.error && (
-        <div className="mb-4 rounded-xl border border-quality-weak/20 bg-quality-weak/[0.08] px-4 py-3 text-[0.88rem] text-quality-weak">
-          {state.error}
-        </div>
-      )}
-
-      {/* Progress strip — only when chat is not active (first search uses external strip) */}
-      {!hasChatMessages &&
-        (isSearching || state.progressMessages.length > 0) &&
-        state.phase !== "results" && (
-          <ProgressStrip
-            messages={state.progressMessages}
-            queries={state.queries}
-            isSearching={isSearching}
-          />
-        )}
-
-      {/* Clarification */}
-      {state.phase === "clarification" && (
-        <>
-          <ClarificationCard questions={state.clarificationQuestions} />
-          <p className="mb-2 text-[0.85rem] text-text-muted">
-            Update your search above with more details, then press Enter.
-          </p>
-          <button
-            onClick={handleClarificationSubmit}
-            className="rounded-full bg-twitter px-5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-80"
-          >
-            Search again
-          </button>
-        </>
-      )}
 
       {/* Results */}
       {state.phase === "results" && (

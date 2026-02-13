@@ -19,6 +19,17 @@ ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 # SocialData settings
 SOCIALDATA_API_KEY = os.getenv("SOCIALDATA_API_KEY")
 
+# Twitter OAuth 2.0 settings (optional — enables network matching)
+TWITTER_CLIENT_ID = os.getenv("TWITTER_CLIENT_ID")
+TWITTER_CLIENT_SECRET = os.getenv("TWITTER_CLIENT_SECRET")
+TWITTER_REDIRECT_URI = os.getenv("TWITTER_REDIRECT_URI", "http://localhost:8000/api/auth/twitter/callback")
+
+
+def is_oauth_configured() -> bool:
+    """Check if Twitter OAuth credentials are set."""
+    return bool(TWITTER_CLIENT_ID)
+
+
 # Search settings
 MIN_QUERIES = 3  # Minimum number of search queries to generate
 MAX_QUERIES = 7  # Maximum number of search queries to generate
