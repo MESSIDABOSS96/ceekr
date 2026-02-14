@@ -1,7 +1,6 @@
 """Core modules for Twitter Account Finder."""
 
 from .models import (
-    ClarificationQuestion,
     RankedAccount,
     SearchQuery,
     TwitterAccount,
@@ -10,7 +9,6 @@ from .models import (
 
 __all__ = [
     "UserInput",
-    "ClarificationQuestion",
     "TwitterAccount",
     "SearchQuery",
     "RankedAccount",

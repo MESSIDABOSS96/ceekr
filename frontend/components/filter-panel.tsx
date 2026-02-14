@@ -11,13 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { X } from "lucide-react";
-import type {
-  Filters,
-  RankedAccount,
-  PostingFrequency,
-  AccountAge,
-} from "@/lib/types";
+import type { Filters, RankedAccount } from "@/lib/types";
 import { getUniqueLocations } from "@/lib/filter-utils";
 
 interface FilterPanelProps {
@@ -27,21 +21,6 @@ interface FilterPanelProps {
   onFiltersChange: (filters: Filters) => void;
   results: RankedAccount[];
 }
-
-const POSTING_OPTIONS: { value: PostingFrequency; label: string }[] = [
-  { value: "daily", label: "Daily" },
-  { value: "several_week", label: "Several/week" },
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
-  { value: "rarely", label: "Rarely" },
-];
-
-const AGE_OPTIONS: { value: AccountAge; label: string }[] = [
-  { value: "lt1", label: "< 1 year" },
-  { value: "1to3", label: "1-3 years" },
-  { value: "3to5", label: "3-5 years" },
-  { value: "5plus", label: "5+ years" },
-];
 
 function formatFollowers(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -77,7 +56,6 @@ export function FilterPanel({
   onFiltersChange,
   results,
 }: FilterPanelProps) {
-  const [keywordInput, setKeywordInput] = useState("");
   const [locationOpen, setLocationOpen] = useState(false);
 
   const locations = useMemo(() => getUniqueLocations(results), [results]);
@@ -90,29 +68,6 @@ export function FilterPanel({
 
   const update = (partial: Partial<Filters>) => {
     onFiltersChange({ ...filters, ...partial });
-  };
-
-  const addKeyword = (kw: string) => {
-    const trimmed = kw.trim();
-    if (trimmed && !filters.keywords.includes(trimmed)) {
-      update({ keywords: [...filters.keywords, trimmed] });
-    }
-    setKeywordInput("");
-  };
-
-  const removeKeyword = (kw: string) => {
-    update({ keywords: filters.keywords.filter((k) => k !== kw) });
-  };
-
-  const toggleMultiSelect = <T extends string>(
-    current: T[],
-    value: T,
-    key: keyof Filters
-  ) => {
-    const next = current.includes(value)
-      ? current.filter((v) => v !== value)
-      : [...current, value];
-    update({ [key]: next } as Partial<Filters>);
   };
 
   const sliderMin = followersToSlider(filters.followerMin);
@@ -129,41 +84,6 @@ export function FilterPanel({
         </DialogHeader>
 
         <div className="space-y-6 pt-2">
-          {/* Keywords */}
-          <div className="space-y-2">
-            <Label className="text-text-secondary">Topic / Niche keywords</Label>
-            <Input
-              value={keywordInput}
-              onChange={(e) => setKeywordInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addKeyword(keywordInput);
-                }
-              }}
-              placeholder="Type and press Enter"
-              className="border-border-subtle bg-surface text-text-primary placeholder:text-text-muted"
-            />
-            {filters.keywords.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {filters.keywords.map((kw) => (
-                  <span
-                    key={kw}
-                    className="inline-flex items-center gap-1 rounded-full bg-twitter/10 px-2.5 py-1 text-xs font-medium text-twitter"
-                  >
-                    {kw}
-                    <button
-                      onClick={() => removeKeyword(kw)}
-                      className="hover:text-white"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-
           {/* Follower count range */}
           <div className="space-y-3">
             <Label className="text-text-secondary">Follower count</Label>
@@ -266,69 +186,14 @@ export function FilterPanel({
             />
           </div>
 
-          {/* Posting frequency */}
-          <div className="space-y-2">
-            <Label className="text-text-secondary">Posting frequency</Label>
-            <div className="flex flex-wrap gap-1.5">
-              {POSTING_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  onClick={() =>
-                    toggleMultiSelect(
-                      filters.postingFrequency,
-                      opt.value,
-                      "postingFrequency"
-                    )
-                  }
-                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                    filters.postingFrequency.includes(opt.value)
-                      ? "border-twitter bg-twitter/15 text-twitter"
-                      : "border-border-subtle text-text-secondary hover:border-twitter/40"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Account age */}
-          <div className="space-y-2">
-            <Label className="text-text-secondary">Account age</Label>
-            <div className="flex flex-wrap gap-1.5">
-              {AGE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  onClick={() =>
-                    toggleMultiSelect(
-                      filters.accountAge,
-                      opt.value,
-                      "accountAge"
-                    )
-                  }
-                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                    filters.accountAge.includes(opt.value)
-                      ? "border-twitter bg-twitter/15 text-twitter"
-                      : "border-border-subtle text-text-secondary hover:border-twitter/40"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
           {/* Reset */}
           <button
             onClick={() =>
               onFiltersChange({
-                keywords: [],
                 followerMin: 0,
                 followerMax: Infinity,
                 location: "",
                 verified: null,
-                postingFrequency: [],
-                accountAge: [],
               })
             }
             className="text-sm text-text-muted hover:text-text-secondary"

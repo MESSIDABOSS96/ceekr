@@ -19,27 +19,23 @@ class UserInput(BaseModel):
     )
 
 
-class ClarificationQuestion(BaseModel):
-    """A clarifying question to ask the user."""
-
-    question: str = Field(..., description="The question to ask")
-    reason: str = Field(..., description="Why this clarification is needed")
-
-
 class SearchIntent(BaseModel):
     """Structured decomposition of the user's search request."""
 
-    is_clear: bool = Field(..., description="Can we meaningfully search? (False only for specificity=1)")
-    questions: list[ClarificationQuestion] = Field(
-        default_factory=list,
-        description="If not clear, what to ask",
-    )
     persona: str = Field("", description="e.g. 'early-stage SaaS founders'")
     topic: str = Field("", description="e.g. 'customer discovery challenges'")
     goal: str = Field("", description="e.g. 'find people to validate product idea with'")
     specificity: int = Field(3, ge=1, le=5, description="1=very broad, 5=very specific")
-    suggested_query_count: int = Field(5, ge=3, le=7, description="3-7 based on specificity")
-    min_score_threshold: int = Field(4, ge=1, le=7, description="Minimum score to show")
+    suggested_query_count: int = Field(5, ge=3, le=12, description="3-12 based on specificity")
+    min_score_threshold: int = Field(5, ge=3, le=8, description="Minimum score to show")
+    key_signals: list[str] = Field(
+        default_factory=list,
+        description="3-5 specific things to look for in tweets/bios that confirm relevance",
+    )
+    anti_signals: list[str] = Field(
+        default_factory=list,
+        description="2-3 disqualifiers that indicate NOT the right person",
+    )
 
 
 class SearchQuery(BaseModel):
@@ -111,6 +107,14 @@ class TwitterAccount(BaseModel):
     )
 
 
+class EnrichmentData(BaseModel):
+    """Supplemental web enrichment data for a ranked account."""
+
+    external_link: Optional[str] = None
+    link_label: Optional[str] = None
+    context_note: Optional[str] = None
+
+
 class RankedAccount(BaseModel):
     """A ranked Twitter account with relevance analysis."""
 
@@ -118,14 +122,21 @@ class RankedAccount(BaseModel):
     relevance_score: float = Field(
         ..., ge=1, le=10, description="Relevance score (1-10)"
     )
-    score_reasoning: str = Field(
-        ..., description="1 sentence explaining what drove this score"
-    )
     why_relevant: str = Field(
-        ..., description="1-2 sentence explanation of why this person is relevant"
+        ..., description="2-3 sentence evidence-based explanation of why this person is relevant"
     )
     suggested_approach: Optional[str] = Field(
         None, description="Optional suggestion for how to engage with this person"
+    )
+    evidence_highlights: list[str] = Field(
+        default_factory=list,
+        description="1-3 direct quotes from tweets/bio proving relevance",
+    )
+    confidence: str = Field(
+        "medium", description="Confidence level: high, medium, or low"
+    )
+    enrichment: Optional[EnrichmentData] = Field(
+        None, description="Supplemental web enrichment data (only when directly relevant)"
     )
 
 

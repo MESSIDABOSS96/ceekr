@@ -1,32 +1,28 @@
 "use client";
 
-import { useReducer, useRef, useCallback, useMemo } from "react";
+import { useReducer, useRef, useCallback, useMemo, useState, useEffect } from "react";
 import { SearchBox } from "@/components/search-box";
 import { FilterChips } from "@/components/filter-chips";
 import { FilterPanel } from "@/components/filter-panel";
 import { ResultCard } from "@/components/result-card";
-import { ChatBox } from "@/components/chat-box";
-import { streamSearch, sendChatMessage } from "@/lib/api";
+import { streamSearch } from "@/lib/api";
 import { applyFilters } from "@/lib/filter-utils";
 import { DEFAULT_FILTERS } from "@/lib/types";
 import type {
-  ClarificationQuestion,
   SearchQuery,
   RankedAccount,
   Filters,
-  ChatMessage,
 } from "@/lib/types";
 
 // ── State machine ──────────────────────────────────────────
 
-type Phase = "landing" | "searching" | "clarification" | "results";
+type Phase = "landing" | "searching" | "results";
 
 interface State {
   phase: Phase;
   query: string;
   progressMessages: string[];
   queries: SearchQuery[];
-  clarificationQuestions: ClarificationQuestion[];
   results: RankedAccount[];
   quality: "strong" | "moderate" | "weak" | null;
   refinementQuestions: string[];
@@ -34,22 +30,12 @@ interface State {
   // Filters
   filters: Filters;
   filterPanelOpen: boolean;
-  // Chat
-  chatMessages: ChatMessage[];
-  chatLoading: boolean;
-  // Find More
-  loadingMore: boolean;
 }
 
 type Action =
   | { type: "SET_QUERY"; query: string }
   | { type: "START_SEARCH" }
   | { type: "PROGRESS"; message: string }
-  | {
-      type: "INTENT";
-      is_clear: boolean;
-      questions: ClarificationQuestion[];
-    }
   | { type: "QUERIES"; queries: SearchQuery[] }
   | {
       type: "RESULTS";
@@ -60,38 +46,19 @@ type Action =
   | { type: "ERROR"; message: string }
   | { type: "RESET" }
   | { type: "SET_FILTERS"; filters: Filters }
-  | { type: "SET_FILTER_PANEL_OPEN"; open: boolean }
-  | { type: "ADD_CHAT_MESSAGE"; message: ChatMessage }
-  | { type: "SET_CHAT_LOADING"; loading: boolean }
-  | { type: "REMOVE_HANDLES"; handles: string[] }
-  | { type: "START_LOAD_MORE" }
-  | {
-      type: "APPEND_RESULTS";
-      ranked: RankedAccount[];
-      quality: "strong" | "moderate" | "weak";
-    }
-  | { type: "STOP_LOAD_MORE" };
-
-let chatIdCounter = 0;
-function nextChatId(): string {
-  return `msg-${++chatIdCounter}`;
-}
+  | { type: "SET_FILTER_PANEL_OPEN"; open: boolean };
 
 const initialState: State = {
   phase: "landing",
   query: "",
   progressMessages: [],
   queries: [],
-  clarificationQuestions: [],
   results: [],
   quality: null,
   refinementQuestions: [],
   error: null,
   filters: { ...DEFAULT_FILTERS },
   filterPanelOpen: false,
-  chatMessages: [],
-  chatLoading: false,
-  loadingMore: false,
 };
 
 function reducer(state: State, action: Action): State {
@@ -108,22 +75,12 @@ function reducer(state: State, action: Action): State {
         quality: null,
         refinementQuestions: [],
         error: null,
-        // Don't reset chatMessages or filters
       };
     case "PROGRESS":
       return {
         ...state,
         progressMessages: [...state.progressMessages, action.message],
       };
-    case "INTENT":
-      if (!action.is_clear) {
-        return {
-          ...state,
-          phase: "clarification",
-          clarificationQuestions: action.questions,
-        };
-      }
-      return state;
     case "QUERIES":
       return { ...state, queries: action.queries };
     case "RESULTS":
@@ -146,47 +103,6 @@ function reducer(state: State, action: Action): State {
       return { ...state, filters: action.filters };
     case "SET_FILTER_PANEL_OPEN":
       return { ...state, filterPanelOpen: action.open };
-    case "ADD_CHAT_MESSAGE":
-      return {
-        ...state,
-        chatMessages: [...state.chatMessages, action.message],
-      };
-    case "SET_CHAT_LOADING":
-      return { ...state, chatLoading: action.loading };
-    case "REMOVE_HANDLES":
-      return {
-        ...state,
-        results: state.results.filter(
-          (r) =>
-            !action.handles.some(
-              (h) => h.toLowerCase() === r.handle.toLowerCase()
-            )
-        ),
-      };
-    case "START_LOAD_MORE":
-      return { ...state, loadingMore: true };
-    case "APPEND_RESULTS": {
-      // Deduplicate by user_id, keeping existing results first
-      const existingIds = new Set(state.results.map((r) => r.user_id));
-      const newResults = action.ranked.filter(
-        (r) => !existingIds.has(r.user_id)
-      );
-      const combined = [...state.results, ...newResults];
-      // Re-sort by score
-      combined.sort((a, b) => b.relevance_score - a.relevance_score);
-      return {
-        ...state,
-        loadingMore: false,
-        results: combined,
-        quality: action.quality === "strong" || state.quality === "strong"
-          ? "strong"
-          : action.quality === "moderate" || state.quality === "moderate"
-            ? "moderate"
-            : "weak",
-      };
-    }
-    case "STOP_LOAD_MORE":
-      return { ...state, loadingMore: false };
     default:
       return state;
   }
@@ -197,6 +113,39 @@ function reducer(state: State, action: Action): State {
 export default function Home() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Landing page typing animation
+  const SUBHEADER = "Find anyone on ";
+  const [titleCharIndex, setTitleCharIndex] = useState(5);
+  const [subCharIndex, setSubCharIndex] = useState(SUBHEADER.length);
+  const hasAnimatedRef = useRef(false);
+
+  useEffect(() => {
+    if (state.phase !== "landing") return;
+    if (hasAnimatedRef.current) {
+      setTitleCharIndex(5);
+      setSubCharIndex(SUBHEADER.length);
+      return;
+    }
+    hasAnimatedRef.current = true;
+    setTitleCharIndex(0);
+    setSubCharIndex(0);
+
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    // Type "Ceekr" at 100ms per char
+    for (let i = 0; i < 5; i++) {
+      timers.push(setTimeout(() => setTitleCharIndex(i + 1), (i + 1) * 100));
+    }
+
+    // After title finishes (500ms) + small pause (200ms), type subheader at 40ms per char
+    const subStart = 700;
+    for (let i = 0; i < SUBHEADER.length; i++) {
+      timers.push(setTimeout(() => setSubCharIndex(i + 1), subStart + (i + 1) * 40));
+    }
+
+    return () => timers.forEach(clearTimeout);
+  }, [state.phase]);
 
   const filteredResults = useMemo(
     () => applyFilters(state.results, state.filters),
@@ -219,28 +168,6 @@ export default function Home() {
         {
           onProgress: (message) =>
             dispatch({ type: "PROGRESS", message }),
-          onIntent: (intent) => {
-            dispatch({
-              type: "INTENT",
-              is_clear: intent.is_clear,
-              questions: intent.questions,
-            });
-            if (!intent.is_clear && intent.questions.length > 0) {
-              const lines = intent.questions
-                .map(
-                  (q) => `- ${q.question}\n  ${q.reason}`
-                )
-                .join("\n\n");
-              dispatch({
-                type: "ADD_CHAT_MESSAGE",
-                message: {
-                  id: nextChatId(),
-                  role: "assistant",
-                  content: `I need a bit more context to find the right people.\n\n${lines}`,
-                },
-              });
-            }
-          },
           onQueries: (queries) =>
             dispatch({ type: "QUERIES", queries }),
           onResults: (results) => {
@@ -250,70 +177,16 @@ export default function Home() {
               quality: results.quality,
               refinement_questions: results.refinement_questions,
             });
-            // Build summary message with quality info
-            const count = results.ranked.length;
-            const q = results.quality;
-            let summary = `Found ${count} account${count !== 1 ? "s" : ""}`;
-            if (q === "weak") {
-              summary += " — relevance is low.";
-            } else if (q === "moderate") {
-              summary += " — relevance is moderate.";
-            } else {
-              summary += ".";
-            }
-            summary +=
-              " You can ask me to refine results, adjust filters, or search for something different.";
-            dispatch({
-              type: "ADD_CHAT_MESSAGE",
-              message: {
-                id: nextChatId(),
-                role: "assistant",
-                content: summary,
-              },
-            });
-            // Add refinement suggestions as a separate message for weak results
-            if (
-              q === "weak" &&
-              results.refinement_questions.length > 0
-            ) {
-              const suggestions = results.refinement_questions
-                .map((rq) => `- ${rq}`)
-                .join("\n");
-              dispatch({
-                type: "ADD_CHAT_MESSAGE",
-                message: {
-                  id: nextChatId(),
-                  role: "assistant",
-                  content: `Results could be better. Some suggestions:\n${suggestions}`,
-                },
-              });
-            }
+            dispatch({ type: "SET_QUERY", query: "" });
           },
           onError: (message) => {
             dispatch({ type: "ERROR", message });
-            dispatch({
-              type: "ADD_CHAT_MESSAGE",
-              message: {
-                id: nextChatId(),
-                role: "assistant",
-                content: `Something went wrong: ${message}`,
-              },
-            });
           },
         },
         controller.signal,
       ).catch((err) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        const msg = String(err.message || err);
-        dispatch({ type: "ERROR", message: msg });
-        dispatch({
-          type: "ADD_CHAT_MESSAGE",
-          message: {
-            id: nextChatId(),
-            role: "assistant",
-            content: `Something went wrong: ${msg}`,
-          },
-        });
+        dispatch({ type: "ERROR", message: String(err.message || err) });
       });
     },
     [],
@@ -321,205 +194,110 @@ export default function Home() {
 
   const handleSubmit = useCallback(() => {
     if (!state.query.trim()) return;
-    // Add user message to chat
-    dispatch({
-      type: "ADD_CHAT_MESSAGE",
-      message: { id: nextChatId(), role: "user", content: state.query },
-    });
     doSearch(state.query);
   }, [state.query, doSearch]);
 
-  const doFindMore = useCallback(() => {
-    if (!state.query.trim() || state.loadingMore) return;
-
-    dispatch({ type: "START_LOAD_MORE" });
-
-    const excludeIds = state.results.map((r) => r.user_id);
-
-    streamSearch(
-      state.query,
-      {
-        onResults: (results) => {
-          dispatch({
-            type: "APPEND_RESULTS",
-            ranked: results.ranked,
-            quality: results.quality,
-          });
-        },
-        onError: (message) => {
-          dispatch({ type: "STOP_LOAD_MORE" });
-          dispatch({ type: "ERROR", message });
-          dispatch({
-            type: "ADD_CHAT_MESSAGE",
-            message: {
-              id: nextChatId(),
-              role: "assistant",
-              content: `Something went wrong while finding more: ${message}`,
-            },
-          });
-        },
-      },
-      undefined,
-      excludeIds,
-    ).catch(() => {
-      dispatch({ type: "STOP_LOAD_MORE" });
-    });
-  }, [state.query, state.results, state.loadingMore]);
-
-  const handleChipClick = useCallback(
-    (chip: string) => {
-      const newQuery = state.query
-        ? `${state.query}, ${chip.toLowerCase()}`
-        : chip;
-      dispatch({ type: "SET_QUERY", query: newQuery });
-    },
-    [state.query],
-  );
-
-  const buildResultsSummary = useCallback((): string => {
-    if (filteredResults.length === 0) return "No results currently shown.";
-    const top = filteredResults
-      .slice(0, 5)
-      .map((r) => `@${r.handle} (${r.name}, score ${r.relevance_score})`)
-      .join(", ");
-    return `${filteredResults.length} accounts shown. Top: ${top}`;
-  }, [filteredResults]);
-
-  const handleChatSend = useCallback(
-    async (text: string) => {
-      const userMsg: ChatMessage = {
-        id: nextChatId(),
-        role: "user",
-        content: text,
-      };
-      dispatch({ type: "ADD_CHAT_MESSAGE", message: userMsg });
-      dispatch({ type: "SET_CHAT_LOADING", loading: true });
-
-      try {
-        // Build messages for API (exclude IDs)
-        const apiMessages = [...state.chatMessages, userMsg].map((m) => ({
-          role: m.role,
-          content: m.content,
-        }));
-
-        const response = await sendChatMessage({
-          messages: apiMessages,
-          filters: state.filters,
-          current_results_summary: buildResultsSummary(),
-        });
-
-        // Add agent response
-        dispatch({
-          type: "ADD_CHAT_MESSAGE",
-          message: {
-            id: nextChatId(),
-            role: "assistant",
-            content: response.response,
-          },
-        });
-
-        // Handle action
-        if (response.action) {
-          switch (response.action.type) {
-            case "search":
-              if (response.action.query) {
-                dispatch({ type: "SET_QUERY", query: response.action.query });
-                doSearch(response.action.query);
-              }
-              break;
-            case "filter":
-              if (response.action.filters) {
-                dispatch({
-                  type: "SET_FILTERS",
-                  filters: { ...state.filters, ...response.action.filters },
-                });
-              }
-              break;
-            case "remove_profiles":
-              if (response.action.removeHandles) {
-                dispatch({
-                  type: "REMOVE_HANDLES",
-                  handles: response.action.removeHandles,
-                });
-              }
-              break;
-          }
-        }
-      } catch (err) {
-        dispatch({
-          type: "ADD_CHAT_MESSAGE",
-          message: {
-            id: nextChatId(),
-            role: "assistant",
-            content: "Sorry, something went wrong. Please try again.",
-          },
-        });
-      } finally {
-        dispatch({ type: "SET_CHAT_LOADING", loading: false });
-      }
-    },
-    [state.chatMessages, state.filters, buildResultsSummary, doSearch],
-  );
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    dispatch({ type: "SET_QUERY", query: "" });
+    dispatch({ type: "RESET" });
+  }, []);
 
   const isSearching = state.phase === "searching";
   const showCompactHeader = state.phase !== "landing";
-  const hasChatMessages = state.chatMessages.length > 0;
 
   return (
     <div className="min-h-screen pb-16">
-      {/* Header */}
+      {/* Header + Search */}
       {showCompactHeader ? (
-        <div className="pt-10 pb-10 text-center">
-          <h1 className="text-xl font-bold tracking-tight text-text-primary">
-            Twitter Account Finder
-          </h1>
+        <div className="flex flex-col items-center pt-10 pb-8">
+          <div
+            className="mb-6 flex items-center gap-4 sm:gap-5 cursor-pointer hover:opacity-70 transition-opacity"
+            onClick={() => dispatch({ type: "RESET" })}
+          >
+            <h1 className="font-mono-display text-[3rem] sm:text-[4.5rem] font-bold tracking-tight text-text-primary leading-none">
+              Ceekr
+            </h1>
+          </div>
+          <div className="w-full max-w-[640px]">
+            <SearchBox
+              value={state.query}
+              onChange={(q) => dispatch({ type: "SET_QUERY", query: q })}
+              onSubmit={handleSubmit}
+              onStop={handleStop}
+              placeholder="Describe who you're looking for..."
+              disabled={isSearching}
+              searching={isSearching}
+            />
+            {isSearching && state.progressMessages.length > 0 && (
+              <p className="mt-4 text-center text-sm text-text-muted animate-pulse">
+                {state.progressMessages[state.progressMessages.length - 1]}
+              </p>
+            )}
+          </div>
         </div>
       ) : (
-        <div className="flex min-h-[40vh] flex-col items-center justify-center pt-[14vh] text-center">
-          <h1 className="mb-2 text-4xl font-bold tracking-tight text-text-primary">
-            Twitter Account Finder
-          </h1>
-          <p className="mb-8 text-base text-text-secondary">
-            Describe who you want to find. We&apos;ll search Twitter and rank
-            the best matches.
+        <div className="flex min-h-[80vh] flex-col items-center justify-center text-center">
+          <div className="mb-4">
+            <h1 className="font-mono-display text-[3rem] sm:text-[4.5rem] font-bold tracking-tight text-text-primary leading-none">
+              {"Ceekr".slice(0, titleCharIndex)}
+              {titleCharIndex < 5 && (
+                <span className="animate-cursor ml-0.5 text-text-muted">|</span>
+              )}
+            </h1>
+          </div>
+
+          <p className="mb-10 text-base sm:text-lg text-text-secondary tracking-wide">
+            {SUBHEADER.slice(0, subCharIndex)}
+            {subCharIndex > 0 && subCharIndex < SUBHEADER.length && (
+              <span className="animate-cursor ml-0.5 text-text-muted">|</span>
+            )}
+            {subCharIndex >= SUBHEADER.length && (
+              <svg viewBox="0 0 24 24" className="inline h-4 w-4 sm:h-5 sm:w-5 fill-text-secondary align-middle -mt-0.5" aria-label="X">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+              </svg>
+            )}
+            {subCharIndex === 0 && <span className="opacity-0">.</span>}
           </p>
+
+          <div className="w-full max-w-[640px]">
+            <SearchBox
+              value={state.query}
+              onChange={(q) => dispatch({ type: "SET_QUERY", query: q })}
+              onSubmit={handleSubmit}
+              onStop={handleStop}
+              placeholder="Describe who you're looking for..."
+              disabled={isSearching}
+              searching={isSearching}
+            />
+            {isSearching && state.progressMessages.length > 0 && (
+              <p className="mt-4 text-center text-sm text-text-muted animate-pulse">
+                {state.progressMessages[state.progressMessages.length - 1]}
+              </p>
+            )}
+          </div>
         </div>
       )}
 
-      {/* Search box OR Chat box */}
-      <div className="mb-4">
-        {hasChatMessages ? (
-          <ChatBox
-            messages={state.chatMessages}
-            loading={state.chatLoading || isSearching}
-            onSend={handleChatSend}
-            disabled={isSearching}
-            progressMessages={state.progressMessages}
-            queries={state.queries}
-            isSearching={isSearching}
-          />
-        ) : (
-          <SearchBox
-            value={state.query}
-            onChange={(q) => dispatch({ type: "SET_QUERY", query: q })}
-            onSubmit={handleSubmit}
-            placeholder="Describe who you're looking for... e.g. 'Founders who have discussed customer discovery challenges, I'm building an AI interview tool'"
-            disabled={isSearching}
-          />
-        )}
-      </div>
+      {/* Error */}
+      {state.error && (
+        <p className="mb-4 text-sm text-red-400">
+          {state.error}
+        </p>
+      )}
 
-      {/* Filter chips — show on all phases */}
-      <div className="mb-6">
-        <FilterChips
-          onChipClick={handleChipClick}
-          filters={state.filters}
-          onFiltersOpen={() =>
-            dispatch({ type: "SET_FILTER_PANEL_OPEN", open: true })
-          }
-          showSuggestionChips={state.phase === "landing"}
-        />
-      </div>
+      {/* Filter chips — hidden on landing */}
+      {state.phase === "results" && (
+        <div className="mb-6">
+          <FilterChips
+            filters={state.filters}
+            onFiltersOpen={() =>
+              dispatch({ type: "SET_FILTER_PANEL_OPEN", open: true })
+            }
+          />
+        </div>
+      )}
 
       {/* Filter panel modal */}
       <FilterPanel
@@ -536,33 +314,15 @@ export default function Home() {
       {/* Results */}
       {state.phase === "results" && (
         <>
-          {filteredResults.map((r) => (
-            <ResultCard key={r.user_id} account={r} />
-          ))}
+          <div className="space-y-4">
+            {filteredResults.map((r) => (
+              <ResultCard key={r.user_id} account={r} />
+            ))}
+          </div>
 
           {filteredResults.length === 0 && state.results.length > 0 && (
             <div className="mb-4 rounded-xl border border-border-subtle bg-surface-card px-4 py-6 text-center text-[0.88rem] text-text-muted">
               No results match your current filters. Try adjusting them.
-            </div>
-          )}
-
-          {/* Find More */}
-          {filteredResults.length > 0 && (
-            <div className="mt-2 mb-4 text-center">
-              <button
-                onClick={doFindMore}
-                disabled={state.loadingMore}
-                className="rounded-full border border-border-subtle bg-surface-card px-6 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-card/80 hover:text-text-primary disabled:opacity-50"
-              >
-                {state.loadingMore ? (
-                  <span className="flex items-center gap-2">
-                    <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-text-muted border-t-transparent" />
-                    Finding more accounts...
-                  </span>
-                ) : (
-                  "Find More"
-                )}
-              </button>
             </div>
           )}
         </>

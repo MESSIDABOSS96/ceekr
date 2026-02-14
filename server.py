@@ -24,6 +24,15 @@ from core.auth import (
     fetch_twitter_user,
     get_session,
 )
+from core.fast_path import (
+    QueryType,
+    classify_query,
+    execute_handle_lookup,
+    light_filter,
+    merge_ranked_results,
+    score_accounts_fast,
+    score_user_search_results,
+)
 from core.llm import LLMClient
 from core.twitter import SearchOrchestrator, TwitterClient
 
@@ -151,7 +160,7 @@ def require_auth(request: Request):
 def _serialize_account(ranked):
     """Serialize a RankedAccount to a JSON-safe dict."""
     acc = ranked.account
-    return {
+    result = {
         "user_id": acc.user_id,
         "handle": acc.handle,
         "name": acc.name,
@@ -181,11 +190,19 @@ def _serialize_account(ranked):
             "follows_you": acc.network.follows_you,
             "mutual_followers": acc.network.mutual_followers,
         },
-        "relevance_score": ranked.relevance_score,
-        "score_reasoning": ranked.score_reasoning,
         "why_relevant": ranked.why_relevant,
         "suggested_approach": ranked.suggested_approach,
+        "evidence_highlights": ranked.evidence_highlights,
+        "confidence": ranked.confidence,
+        "enrichment": None,
     }
+    if ranked.enrichment:
+        result["enrichment"] = {
+            "external_link": ranked.enrichment.external_link,
+            "link_label": ranked.enrichment.link_label,
+            "context_note": ranked.enrichment.context_note,
+        }
+    return result
 
 
 @app.post("/api/chat")
@@ -228,114 +245,204 @@ async def chat(request: Request):
 
 @app.post("/api/search")
 async def search(request: Request):
-    session = require_auth(request)
+    # Auth is optional — enables network matching when logged in
+    token = request.headers.get("x-session-token")
+    session = get_session(token) if token else None
+
     body = await request.json()
     query = body.get("query", "").strip()
-    exclude_user_ids = set(body.get("exclude_user_ids", []))
 
     if not query:
         async def error_stream():
             yield {"event": "error", "data": json.dumps({"message": "Query is required"})}
         return EventSourceResponse(error_stream())
 
-    user_network = session.network if session.network.loaded else None
+    user_network = session.network if session and session.network.loaded else None
 
     async def event_stream():
         try:
+            classification = classify_query(query)
+
+            # ── @handle → fast path only ──
+            if classification.query_type == QueryType.HANDLE_LOOKUP:
+                yield {"event": "progress", "data": json.dumps({"message": "Looking up profile..."})}
+
+                twitter = TwitterClient()
+                await twitter.initialize()
+
+                ranked = await execute_handle_lookup(
+                    twitter, classification.raw_query, user_network=user_network,
+                )
+
+                if not ranked:
+                    yield {"event": "error", "data": json.dumps({"message": "Account not found."})}
+                    return
+
+                yield {
+                    "event": "results",
+                    "data": json.dumps({
+                        "ranked": [_serialize_account(r) for r in ranked],
+                        "quality": "strong",
+                        "refinement_questions": [],
+                    }),
+                }
+                return
+
+            # ── Everything else: user search + LLM pipeline in parallel ──
+            yield {"event": "progress", "data": json.dumps({"message": "Scanning Twitter..."})}
+
+            twitter = TwitterClient()
+            await twitter.initialize()
             llm = LLMClient()
             queue: asyncio.Queue = asyncio.Queue()
 
-            # Step 1: Extract intent
-            yield {"event": "progress", "data": json.dumps({"message": "Analyzing your request..."})}
+            # --- Leg A: User search API (fast, ~1-2s) ---
+            user_search_task = asyncio.create_task(
+                score_user_search_results(twitter, query, user_network=user_network)
+            )
 
-            intent = await llm.extract_intent(query, None)
+            # --- Leg B: Full LLM pipeline (slow, ~15-30s) ---
+            async def run_llm_pipeline() -> list:
+                """Run the full LLM pipeline: intent → queries → tweet search → rank."""
+                from core.fast_path import score_accounts_fast, light_filter
 
-            yield {
-                "event": "intent",
-                "data": json.dumps({
-                    "is_clear": intent.is_clear,
-                    "questions": [
-                        {"question": q.question, "reason": q.reason}
-                        for q in intent.questions
-                    ],
+                # Step 1: Analyze intent + generate queries
+                await queue.put("Understanding your search...")
+                intent, queries = await llm.plan_search(query, None)
+
+                await queue.put(json.dumps({
+                    "_event": "intent",
                     "persona": intent.persona,
                     "topic": intent.topic,
                     "goal": intent.goal,
                     "specificity": intent.specificity,
-                }),
-            }
+                    "key_signals": intent.key_signals,
+                    "anti_signals": intent.anti_signals,
+                    "min_score_threshold": intent.min_score_threshold,
+                }))
 
-            if not intent.is_clear:
-                return
+                if not queries:
+                    return []
 
-            # Step 2: Generate queries
-            yield {"event": "progress", "data": json.dumps({"message": "Generating search strategies..."})}
+                await queue.put(json.dumps({
+                    "_event": "queries",
+                    "queries": [
+                        {"query": q.query, "rationale": q.rationale, "angle": q.angle}
+                        for q in queries
+                    ],
+                }))
 
-            queries_response = await llm.generate_search_queries(intent)
+                # Step 2: Execute tweet searches
+                orchestrator = SearchOrchestrator(twitter)
 
-            if not queries_response.queries:
-                yield {"event": "error", "data": json.dumps({"message": "Failed to generate search queries"})}
-                return
+                async def search_status(msg: str):
+                    await queue.put(msg)
 
-            yield {
-                "event": "queries",
-                "data": json.dumps([
-                    {"query": q.query, "rationale": q.rationale, "angle": q.angle}
-                    for q in queries_response.queries
-                ]),
-            }
-
-            # Step 3: Execute searches with progress updates via queue
-            twitter = TwitterClient()
-            await twitter.initialize()
-            orchestrator = SearchOrchestrator(twitter)
-
-            async def status_callback(msg: str):
-                await queue.put(msg)
-
-            query_strings = [q.query for q in queries_response.queries]
-
-            search_task = asyncio.create_task(
-                orchestrator.execute_searches(
-                    query_strings, status_callback,
-                    exclude_user_ids=exclude_user_ids or None,
-                    user_network=user_network,
+                query_strings = [q.query for q in queries]
+                accounts = await orchestrator.execute_searches(
+                    query_strings, search_status, user_network=user_network,
                 )
-            )
 
-            # Drain progress messages while search runs
-            while not search_task.done():
+                if not accounts:
+                    return []
+
+                # Step 3: Pre-filter
+                await queue.put(f"Sifting through {len(accounts)} accounts...")
+                filtered, removed = SearchOrchestrator.pre_filter_accounts(accounts, intent)
+                if not filtered:
+                    return []
+
+                await queue.put(f"Narrowed to {len(filtered)} promising matches")
+
+                # Step 4: Rank with LLM
+                await queue.put(f"Ranking {len(filtered)} accounts by relevance...")
+                ranking = await llm.rank_accounts(intent, filtered, user_network=user_network)
+
+                return ranking.ranked_accounts if ranking.ranked_accounts else []
+
+            llm_pipeline_task = asyncio.create_task(run_llm_pipeline())
+
+            # --- Drain progress while both tasks run ---
+            all_done = False
+            while not all_done:
+                done_tasks = {t for t in [user_search_task, llm_pipeline_task] if t.done()}
+                all_done = len(done_tasks) == 2
+
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    # Check if this is a structured event (intent/queries)
+                    if isinstance(msg, str) and msg.startswith("{"):
+                        try:
+                            parsed = json.loads(msg)
+                            event_type = parsed.pop("_event", None)
+                            if event_type == "intent":
+                                yield {"event": "intent", "data": json.dumps(parsed)}
+                                continue
+                            elif event_type == "queries":
+                                yield {"event": "queries", "data": json.dumps(parsed["queries"])}
+                                continue
+                        except (json.JSONDecodeError, KeyError):
+                            pass
                     yield {"event": "progress", "data": json.dumps({"message": msg})}
                 except asyncio.TimeoutError:
                     continue
 
-            accounts = search_task.result()
-
-            # Drain any remaining messages
+            # Drain remaining queue messages
             while not queue.empty():
                 msg = queue.get_nowait()
+                if isinstance(msg, str) and msg.startswith("{"):
+                    try:
+                        parsed = json.loads(msg)
+                        event_type = parsed.pop("_event", None)
+                        if event_type == "intent":
+                            yield {"event": "intent", "data": json.dumps(parsed)}
+                            continue
+                        elif event_type == "queries":
+                            yield {"event": "queries", "data": json.dumps(parsed["queries"])}
+                            continue
+                    except (json.JSONDecodeError, KeyError):
+                        pass
                 yield {"event": "progress", "data": json.dumps({"message": msg})}
 
-            if not accounts:
+            # --- Collect results from both legs ---
+            user_search_results = []
+            llm_results = []
+
+            try:
+                user_search_results = user_search_task.result()
+            except Exception as e:
+                print(f"User search failed: {e}")
+                traceback.print_exc()
+
+            try:
+                llm_results = llm_pipeline_task.result()
+            except Exception as e:
+                print(f"LLM pipeline failed: {e}")
+                traceback.print_exc()
+
+            # --- Merge results ---
+            merged = merge_ranked_results(user_search_results, llm_results)
+
+            if not merged:
                 yield {"event": "error", "data": json.dumps({"message": "No accounts found. Try broadening your search."})}
                 return
 
-            # Step 4: Rank accounts
-            yield {
-                "event": "progress",
-                "data": json.dumps({"message": f"Found {len(accounts)} accounts, analyzing relevance..."}),
-            }
-
-            ranking = await llm.rank_accounts(intent, accounts, user_network=user_network)
+            # Compute quality
+            high_scores = sum(1 for r in merged if r.relevance_score >= 7)
+            mid_scores = sum(1 for r in merged if r.relevance_score >= 5)
+            if high_scores >= 5:
+                quality = "strong"
+            elif high_scores >= 2 or mid_scores >= 5:
+                quality = "moderate"
+            else:
+                quality = "weak"
 
             yield {
                 "event": "results",
                 "data": json.dumps({
-                    "ranked": [_serialize_account(r) for r in ranking.ranked_accounts],
-                    "quality": ranking.result_quality,
-                    "refinement_questions": ranking.refinement_questions,
+                    "ranked": [_serialize_account(r) for r in merged],
+                    "quality": quality,
+                    "refinement_questions": [],
                 }),
             }
 

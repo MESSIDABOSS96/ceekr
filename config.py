@@ -15,6 +15,7 @@ COOKIES_FILE = PROJECT_ROOT / "cookies.json"
 # Anthropic settings
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+ANTHROPIC_FAST_MODEL = os.getenv("ANTHROPIC_FAST_MODEL", "claude-haiku-4-5-20251001")
 
 # SocialData settings
 SOCIALDATA_API_KEY = os.getenv("SOCIALDATA_API_KEY")
@@ -31,9 +32,38 @@ def is_oauth_configured() -> bool:
 
 
 # Search settings
-MIN_QUERIES = 3  # Minimum number of search queries to generate
-MAX_QUERIES = 7  # Maximum number of search queries to generate
-TWEETS_PER_QUERY = 20  # Number of tweets to fetch per query
+MIN_QUERIES = 5  # Number of search queries to generate (fixed)
+MAX_QUERIES = 5  # Number of search queries to generate (fixed)
+TWEETS_PER_QUERY = 30  # Number of tweets to fetch per query
+
+# Pre-filter thresholds
+MIN_FOLLOWERS_THRESHOLD = 25
+MAX_FOLLOWERS_THRESHOLD = 2_000_000
+MIN_BIO_LENGTH = 10
+BOT_KEYWORDS = ["bot", "auto", "giveaway", "airdrop", "free followers", "follow back"]
+
+# Ranking
+RANKING_BATCH_SIZE = 40
+MAX_TWEETS_FOR_RANKING = 5  # tweets sent to LLM per account (was 2)
+MAX_TWEET_LENGTH = 400  # chars per tweet (was 200)
+MAX_BIO_LENGTH = 300  # chars for bio (was 200)
+
+# Fast path
+FAST_PATH_MAX_RESULTS = 40
+
+# Score gating
+DEFAULT_SCORE_THRESHOLD = 5
+MIN_RESULTS_BEFORE_LOWERING = 15
+ABSOLUTE_MIN_THRESHOLD = 3
+
+# Recency scoring
+RECENCY_HALF_LIFE_DAYS = 90        # engagement value halves every N days
+RECENCY_BONUS_WINDOW_DAYS = 30     # additive bonus for tweets within this window
+STALE_ACCOUNT_DAYS = 180           # days without tweets = "stale" signal to LLM
+
+# Enrichment (post-ranking, supplemental only)
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")  # Optional — web enrichment for links
+TIMELINE_TWEETS_COUNT = 15  # tweets to fetch from user timeline
 
 
 def validate_config() -> list[str]:

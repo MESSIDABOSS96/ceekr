@@ -1,26 +1,38 @@
 """LLM layer for Claude API calls."""
 
+import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Optional
 
 import anthropic
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
+from config import (
+    ABSOLUTE_MIN_THRESHOLD,
+    ANTHROPIC_API_KEY,
+    ANTHROPIC_FAST_MODEL,
+    ANTHROPIC_MODEL,
+    MAX_BIO_LENGTH,
+    MAX_TWEET_LENGTH,
+    MAX_TWEETS_FOR_RANKING,
+    MIN_RESULTS_BEFORE_LOWERING,
+    RANKING_BATCH_SIZE,
+    RECENCY_BONUS_WINDOW_DAYS,
+    STALE_ACCOUNT_DAYS,
+)
+from core.twitter import _tweet_recency_score
 
 from .models import (
-    ClarificationQuestion,
     RankedAccount,
     RankingResponse,
     SearchIntent,
-    SearchQueriesResponse,
     SearchQuery,
     TwitterAccount,
 )
-from prompts.intent_extraction import format_intent_prompt
-from prompts.query_generation import format_query_prompt
 from prompts.ranking import format_ranking_prompt
 from prompts.chat import format_chat_system_prompt
+from prompts.search_plan import format_search_plan_prompt
 
 
 class LLMClient:
@@ -29,138 +41,61 @@ class LLMClient:
     def __init__(self):
         self.client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         self.model = ANTHROPIC_MODEL
+        self.fast_model = ANTHROPIC_FAST_MODEL
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def extract_intent(self, who: str, why: Optional[str] = None) -> SearchIntent:
+    async def plan_search(
+        self, who: str, why: Optional[str] = None
+    ) -> tuple[SearchIntent, list[SearchQuery]]:
         """
-        Extract structured intent from user input.
+        Combined intent extraction + query generation in a single Haiku call.
 
-        Returns SearchIntent with decomposed fields. If input is too broad
-        (specificity=1), is_clear=False with clarifying questions.
+        Always returns queries (may be empty on failure).
         """
         tools = [
             {
-                "name": "extract_intent",
-                "description": "Extract structured search intent from the user's request",
+                "name": "search_plan",
+                "description": "Analyze the search request and generate a search plan with queries",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "is_clear": {
-                            "type": "boolean",
-                            "description": "True if specificity >= 2 (can search). False only for specificity 1.",
-                        },
-                        "questions": {
-                            "type": "array",
-                            "description": "Clarifying questions if is_clear is False (empty if clear)",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "question": {
-                                        "type": "string",
-                                        "description": "The clarifying question to ask",
-                                    },
-                                    "reason": {
-                                        "type": "string",
-                                        "description": "Why this clarification helps",
-                                    },
-                                },
-                                "required": ["question", "reason"],
-                            },
-                        },
                         "persona": {
                             "type": "string",
-                            "description": "The type of person to find (e.g., 'early-stage SaaS founders')",
+                            "description": "The type of person to find",
                         },
                         "topic": {
                             "type": "string",
-                            "description": "What they should be discussing (e.g., 'customer discovery challenges')",
+                            "description": "What they should be discussing",
                         },
                         "goal": {
                             "type": "string",
-                            "description": "Why the user wants to find them (e.g., 'validate product idea')",
+                            "description": "Why the user wants to find them",
                         },
                         "specificity": {
                             "type": "integer",
-                            "description": "How specific the request is (1=very broad, 5=very specific)",
+                            "description": "How specific the request is (1-5)",
                             "minimum": 1,
                             "maximum": 5,
                         },
-                        "suggested_query_count": {
-                            "type": "integer",
-                            "description": "Recommended number of search queries (3-7)",
-                            "minimum": 3,
-                            "maximum": 7,
-                        },
                         "min_score_threshold": {
                             "type": "integer",
-                            "description": "Minimum relevance score to show (1-7)",
-                            "minimum": 1,
-                            "maximum": 7,
+                            "description": "Minimum relevance score to show (3-8)",
+                            "minimum": 3,
+                            "maximum": 8,
                         },
-                    },
-                    "required": [
-                        "is_clear",
-                        "questions",
-                        "persona",
-                        "topic",
-                        "goal",
-                        "specificity",
-                        "suggested_query_count",
-                        "min_score_threshold",
-                    ],
-                },
-            }
-        ]
-
-        prompt = format_intent_prompt(who, why)
-
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=1024,
-            tools=tools,
-            tool_choice={"type": "tool", "name": "extract_intent"},
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        for block in response.content:
-            if block.type == "tool_use":
-                result = block.input
-                return SearchIntent(
-                    is_clear=result["is_clear"],
-                    questions=[
-                        ClarificationQuestion(question=q["question"], reason=q["reason"])
-                        for q in result.get("questions", [])
-                    ],
-                    persona=result.get("persona", ""),
-                    topic=result.get("topic", ""),
-                    goal=result.get("goal", ""),
-                    specificity=result.get("specificity", 3),
-                    suggested_query_count=result.get("suggested_query_count", 5),
-                    min_score_threshold=result.get("min_score_threshold", 4),
-                )
-
-        # Fallback: assume clear with defaults
-        return SearchIntent(is_clear=True, questions=[])
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def generate_search_queries(self, intent: SearchIntent) -> SearchQueriesResponse:
-        """
-        Generate Twitter search queries based on structured intent.
-
-        Returns search queries from different angles.
-        """
-        query_count = intent.suggested_query_count
-
-        tools = [
-            {
-                "name": "generate_queries",
-                "description": "Generate Twitter search queries to find relevant accounts",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
+                        "key_signals": {
+                            "type": "array",
+                            "description": "3-5 specific things to look for in tweets/bios",
+                            "items": {"type": "string"},
+                        },
+                        "anti_signals": {
+                            "type": "array",
+                            "description": "2-3 things that indicate NOT the right person",
+                            "items": {"type": "string"},
+                        },
                         "queries": {
                             "type": "array",
-                            "description": f"List of exactly {query_count} search queries",
+                            "description": "5 Twitter search queries",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -174,61 +109,76 @@ class LLMClient:
                                     },
                                     "angle": {
                                         "type": "string",
-                                        "description": "What angle this query takes (e.g., 'pain points', 'tool discussions')",
+                                        "description": "What angle this query takes",
                                     },
                                 },
                                 "required": ["query", "rationale", "angle"],
                             },
-                            "minItems": min(3, query_count),
-                            "maxItems": query_count,
                         },
                     },
-                    "required": ["queries"],
+                    "required": [
+                        "persona",
+                        "topic",
+                        "goal",
+                        "specificity",
+                        "min_score_threshold",
+                        "key_signals",
+                        "anti_signals",
+                        "queries",
+                    ],
                 },
             }
         ]
 
-        prompt = format_query_prompt(intent)
+        prompt = format_search_plan_prompt(who, why)
 
         response = await self.client.messages.create(
-            model=self.model,
+            model=self.fast_model,
             max_tokens=2048,
             tools=tools,
-            tool_choice={"type": "tool", "name": "generate_queries"},
+            tool_choice={"type": "tool", "name": "search_plan"},
             messages=[{"role": "user", "content": prompt}],
         )
 
         for block in response.content:
             if block.type == "tool_use":
                 result = block.input
-                return SearchQueriesResponse(
-                    queries=[
-                        SearchQuery(
-                            query=q["query"],
-                            rationale=q["rationale"],
-                            angle=q["angle"],
-                        )
-                        for q in result["queries"]
-                    ]
+
+                intent = SearchIntent(
+                    persona=result.get("persona", ""),
+                    topic=result.get("topic", ""),
+                    goal=result.get("goal", ""),
+                    specificity=result.get("specificity", 3),
+                    suggested_query_count=5,
+                    min_score_threshold=result.get("min_score_threshold", 5),
+                    key_signals=result.get("key_signals", []),
+                    anti_signals=result.get("anti_signals", []),
                 )
 
-        return SearchQueriesResponse(queries=[])
+                queries = [
+                    SearchQuery(
+                        query=q["query"],
+                        rationale=q["rationale"],
+                        angle=q["angle"],
+                    )
+                    for q in result.get("queries", [])
+                ]
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def rank_accounts(
+                return intent, queries
+
+        # Fallback: defaults with no queries
+        return SearchIntent(), []
+
+    async def _rank_batch(
         self,
         intent: SearchIntent,
         accounts: list[TwitterAccount],
         user_network=None,
-    ) -> RankingResponse:
-        """
-        Rank accounts by relevance to the user's search intent.
-
-        Returns accounts sorted by score with explanations and quality assessment.
-        """
+    ) -> list[dict]:
+        """Rank a single batch of accounts. Returns raw ranked dicts."""
         accounts_data = []
         for acc in accounts:
-            # Determine network match type if user_network is available
+            # Determine network match type
             network_match = None
             if user_network:
                 you_follow = acc.user_id in user_network.following_ids
@@ -240,19 +190,56 @@ class LLMClient:
                 elif follows_you:
                     network_match = "follows_you"
 
+            # Sort tweets by blended recency+engagement
+            sorted_tweets = sorted(
+                acc.recent_tweets,
+                key=_tweet_recency_score,
+                reverse=True,
+            )
+
+            # Compute recency metadata for the LLM
+            now = datetime.now(timezone.utc)
+            days_since_newest = None
+            activity_status = "stale"
+            for t in sorted_tweets:
+                if t.created_at is not None:
+                    created = (
+                        t.created_at
+                        if t.created_at.tzinfo
+                        else t.created_at.replace(tzinfo=timezone.utc)
+                    )
+                    days = max(0, (now - created).total_seconds() / 86400)
+                    if days_since_newest is None or days < days_since_newest:
+                        days_since_newest = days
+            if days_since_newest is not None:
+                if days_since_newest <= RECENCY_BONUS_WINDOW_DAYS:
+                    activity_status = "active"
+                elif days_since_newest <= STALE_ACCOUNT_DAYS:
+                    activity_status = "somewhat_active"
+                else:
+                    activity_status = "stale"
+
             account_dict = {
                 "handle": acc.handle,
                 "name": acc.name,
-                "bio": (acc.bio or "")[:200],
+                "bio": (acc.bio or "")[:MAX_BIO_LENGTH],
                 "followers_count": acc.followers_count,
+                "following_count": acc.following_count,
+                "location": acc.location or "",
+                "verified": acc.verified,
+                "days_since_newest_tweet": round(days_since_newest, 1) if days_since_newest is not None else None,
+                "activity_status": activity_status,
                 "recent_tweets": [
                     {
-                        "text": t.text[:200],
+                        "text": t.text[:MAX_TWEET_LENGTH],
                         "date": t.created_at.isoformat() if t.created_at else None,
+                        "likes": t.like_count,
+                        "retweets": t.retweet_count,
                     }
-                    for t in acc.recent_tweets[:2]
+                    for t in sorted_tweets[:MAX_TWEETS_FOR_RANKING]
                 ],
                 "matched_query_count": len(acc.matched_queries),
+                "matched_queries": acc.matched_queries[:3],
             }
             if network_match:
                 account_dict["network_match"] = network_match
@@ -263,7 +250,7 @@ class LLMClient:
         tools = [
             {
                 "name": "rank_accounts",
-                "description": "Rank Twitter accounts by relevance with quality assessment",
+                "description": "Rank Twitter accounts by relevance with evidence-based explanations",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -281,13 +268,21 @@ class LLMClient:
                                         "type": "number",
                                         "description": "Relevance score (1-10)",
                                     },
-                                    "score_reasoning": {
-                                        "type": "string",
-                                        "description": "1 sentence explaining what drove this score",
-                                    },
                                     "why_relevant": {
                                         "type": "string",
-                                        "description": "1-2 sentence explanation",
+                                        "description": "2-3 sentence evidence-based explanation",
+                                    },
+                                    "evidence_highlights": {
+                                        "type": "array",
+                                        "description": "1-3 direct quotes from tweets/bio proving relevance",
+                                        "items": {"type": "string"},
+                                        "minItems": 1,
+                                        "maxItems": 3,
+                                    },
+                                    "confidence": {
+                                        "type": "string",
+                                        "enum": ["high", "medium", "low"],
+                                        "description": "Confidence level based on evidence strength",
                                     },
                                     "suggested_approach": {
                                         "type": "string",
@@ -297,23 +292,14 @@ class LLMClient:
                                 "required": [
                                     "handle",
                                     "relevance_score",
-                                    "score_reasoning",
                                     "why_relevant",
+                                    "evidence_highlights",
+                                    "confidence",
                                 ],
                             },
                         },
-                        "result_quality": {
-                            "type": "string",
-                            "enum": ["strong", "moderate", "weak"],
-                            "description": "Overall quality: strong (3+ scored 7+), moderate (5+ scored 5+), weak (otherwise)",
-                        },
-                        "refinement_questions": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "1-2 clarifying questions if quality is weak (empty otherwise)",
-                        },
                     },
-                    "required": ["ranked_accounts", "result_quality", "refinement_questions"],
+                    "required": ["ranked_accounts"],
                 },
             }
         ]
@@ -322,7 +308,7 @@ class LLMClient:
 
         response = await self.client.messages.create(
             model=self.model,
-            max_tokens=4096,
+            max_tokens=8192,
             tools=tools,
             tool_choice={"type": "tool", "name": "rank_accounts"},
             messages=[{"role": "user", "content": prompt}],
@@ -330,31 +316,91 @@ class LLMClient:
 
         for block in response.content:
             if block.type == "tool_use":
-                result = block.input
+                return block.input.get("ranked_accounts", [])
 
-                accounts_by_handle = {acc.handle.lower(): acc for acc in accounts}
+        return []
 
-                ranked = []
-                for item in result["ranked_accounts"]:
-                    handle = item["handle"].lower().lstrip("@")
-                    if handle in accounts_by_handle:
-                        ranked.append(
-                            RankedAccount(
-                                account=accounts_by_handle[handle],
-                                relevance_score=item["relevance_score"],
-                                score_reasoning=item["score_reasoning"],
-                                why_relevant=item["why_relevant"],
-                                suggested_approach=item.get("suggested_approach"),
-                            )
+    async def rank_accounts(
+        self,
+        intent: SearchIntent,
+        accounts: list[TwitterAccount],
+        user_network=None,
+    ) -> RankingResponse:
+        """
+        Rank accounts by relevance using batched parallel LLM calls.
+
+        Applies score threshold from intent and computes quality assessment in Python.
+        """
+        # Split into batches
+        batches = []
+        for i in range(0, len(accounts), RANKING_BATCH_SIZE):
+            batches.append(accounts[i : i + RANKING_BATCH_SIZE])
+
+        # Rank all batches in parallel
+        tasks = [
+            self._rank_batch(intent, batch, user_network)
+            for batch in batches
+        ]
+        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Merge results from all batches
+        accounts_by_handle = {acc.handle.lower(): acc for acc in accounts}
+        all_ranked: list[RankedAccount] = []
+
+        for result in batch_results:
+            if isinstance(result, Exception):
+                print(f"Ranking batch failed: {result}")
+                continue
+
+            for item in result:
+                handle = item["handle"].lower().lstrip("@")
+                if handle in accounts_by_handle:
+                    all_ranked.append(
+                        RankedAccount(
+                            account=accounts_by_handle[handle],
+                            relevance_score=item["relevance_score"],
+                            why_relevant=item["why_relevant"],
+                            suggested_approach=item.get("suggested_approach"),
+                            evidence_highlights=item.get("evidence_highlights", []),
+                            confidence=item.get("confidence", "medium"),
                         )
+                    )
 
-                return RankingResponse(
-                    ranked_accounts=ranked,
-                    result_quality=result.get("result_quality", "moderate"),
-                    refinement_questions=result.get("refinement_questions", []),
-                )
+        # Sort by score descending
+        all_ranked.sort(key=lambda r: r.relevance_score, reverse=True)
 
-        return RankingResponse(ranked_accounts=[])
+        # Apply score threshold, progressively lowering if too few results
+        threshold = intent.min_score_threshold
+        filtered = [r for r in all_ranked if r.relevance_score >= threshold]
+
+        while len(filtered) < MIN_RESULTS_BEFORE_LOWERING and threshold > ABSOLUTE_MIN_THRESHOLD:
+            threshold = max(threshold - 1, ABSOLUTE_MIN_THRESHOLD)
+            filtered = [r for r in all_ranked if r.relevance_score >= threshold]
+
+        # Compute quality assessment in Python
+        high_scores = sum(1 for r in filtered if r.relevance_score >= 7)
+        mid_scores = sum(1 for r in filtered if r.relevance_score >= 5)
+
+        if high_scores >= 5:
+            quality = "strong"
+        elif high_scores >= 2 or mid_scores >= 10:
+            quality = "moderate"
+        else:
+            quality = "weak"
+
+        # Generate refinement suggestions for weak results
+        refinement_questions = []
+        if quality == "weak":
+            refinement_questions = [
+                f"Could you be more specific about what aspect of '{intent.topic}' you're interested in?",
+                f"Are you looking for {intent.persona} specifically, or would adjacent roles also work?",
+            ]
+
+        return RankingResponse(
+            ranked_accounts=filtered,
+            result_quality=quality,
+            refinement_questions=refinement_questions,
+        )
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def chat_respond(

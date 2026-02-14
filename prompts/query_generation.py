@@ -28,13 +28,25 @@ Topic: {topic}
 Goal: {goal}
 Specificity: {specificity}/5
 
+## Key Signals to Target
+These are specific things that confirm someone is the right match. Design queries that surface tweets containing these signals:
+{key_signals}
+
+## Anti-Signals (Avoid)
+These indicate NOT the right person. Avoid queries that mainly attract these:
+{anti_signals}
+
 ## Your Task
-Generate exactly {query_count} search queries from different angles:
-1. Direct pain point expressions (people complaining/struggling)
-2. Topic + persona combinations (founders discussing X, researchers on Y)
-3. Tool/solution discussions (people discussing alternatives)
-4. Process/methodology mentions (how people approach the problem)
-5. Outcome-focused (people celebrating success or analyzing failure)
+Generate exactly {query_count} search queries covering these 6 diversity categories:
+
+1. **Pain points**: People complaining, struggling, or asking for help with the topic
+2. **Identity/role**: Queries that target the persona directly (role + topic)
+3. **Tool/methodology**: People discussing specific tools, frameworks, or methods related to the topic
+4. **Achievement/sharing**: People celebrating wins, sharing results, or posting learnings
+5. **Community/events**: Conference mentions, community discussions, meetups
+6. **Contrarian/debate**: Hot takes, disagreements, or strong opinions on the topic
+
+Spread queries across these categories. Not every category needs a query, but aim for diversity — queries that all use the same phrasing will return the same results.
 {niche_instruction}
 Each query should:
 - Be a quoted phrase ALONE, or a quoted phrase + ONE extra keyword. Nothing more.
@@ -58,6 +70,9 @@ def format_query_prompt(intent: SearchIntent) -> str:
             "This helps surface focused accounts that broad queries miss.\n"
         )
 
+    key_signals = "\n".join(f"- {s}" for s in intent.key_signals) if intent.key_signals else "- (none provided)"
+    anti_signals = "\n".join(f"- {s}" for s in intent.anti_signals) if intent.anti_signals else "- (none provided)"
+
     return QUERY_GENERATION_PROMPT.format(
         persona=intent.persona,
         topic=intent.topic,
@@ -65,4 +80,6 @@ def format_query_prompt(intent: SearchIntent) -> str:
         specificity=intent.specificity,
         query_count=intent.suggested_query_count,
         niche_instruction=niche_instruction,
+        key_signals=key_signals,
+        anti_signals=anti_signals,
     )
