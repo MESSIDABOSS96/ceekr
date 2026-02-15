@@ -10,6 +10,7 @@ from fastapi.responses import RedirectResponse
 from sse_starlette.sse import EventSourceResponse
 
 from config import (
+    MIN_ACCOUNTS_BEFORE_FALLBACK,
     TWITTER_CLIENT_ID,
     TWITTER_CLIENT_SECRET,
     TWITTER_REDIRECT_URI,
@@ -191,6 +192,9 @@ def _serialize_account(ranked):
             "mutual_followers": acc.network.mutual_followers,
         },
         "why_relevant": ranked.why_relevant,
+        "bucket": ranked.bucket,
+        "summary": ranked.summary,
+        "highlight_tweet_indices": ranked.highlight_tweet_indices,
         "suggested_approach": ranked.suggested_approach,
         "evidence_highlights": ranked.evidence_highlights,
         "confidence": ranked.confidence,
@@ -301,10 +305,13 @@ async def search(request: Request):
                 score_user_search_results(twitter, query, user_network=user_network)
             )
 
+            # Bio search tasks will be populated after plan_search completes
+            bio_search_tasks: list[asyncio.Task] = []
+
             # --- Leg B: Full LLM pipeline (slow, ~15-30s) ---
             async def run_llm_pipeline() -> list:
                 """Run the full LLM pipeline: intent → queries → tweet search → rank."""
-                from core.fast_path import score_accounts_fast, light_filter
+                from core.fast_path import light_filter
 
                 # Step 1: Analyze intent + generate queries
                 await queue.put("Understanding your search...")
@@ -318,8 +325,14 @@ async def search(request: Request):
                     "specificity": intent.specificity,
                     "key_signals": intent.key_signals,
                     "anti_signals": intent.anti_signals,
-                    "min_score_threshold": intent.min_score_threshold,
                 }))
+
+                # Launch bio keyword searches in parallel (Leg A extension)
+                for term in intent.bio_search_terms:
+                    task = asyncio.create_task(
+                        score_user_search_results(twitter, term, user_network=user_network)
+                    )
+                    bio_search_tasks.append(task)
 
                 if not queries:
                     return []
@@ -343,6 +356,24 @@ async def search(request: Request):
                     query_strings, search_status, user_network=user_network,
                 )
 
+                # Step 2b: Fallback queries if too few accounts
+                if len(accounts) < MIN_ACCOUNTS_BEFORE_FALLBACK:
+                    await queue.put(f"Only {len(accounts)} accounts found, broadening search...")
+                    fallback_queries = await llm.generate_fallback_queries(
+                        intent, query_strings, len(accounts),
+                    )
+                    if fallback_queries:
+                        fallback_strings = [q.query for q in fallback_queries]
+                        fallback_accounts = await orchestrator.execute_searches(
+                            fallback_strings, search_status, user_network=user_network,
+                        )
+                        # Merge: add new accounts not already seen
+                        existing_ids = {a.user_id for a in accounts}
+                        for acc in fallback_accounts:
+                            if acc.user_id not in existing_ids:
+                                accounts.append(acc)
+                                existing_ids.add(acc.user_id)
+
                 if not accounts:
                     return []
 
@@ -354,6 +385,12 @@ async def search(request: Request):
 
                 await queue.put(f"Narrowed to {len(filtered)} promising matches")
 
+                # Step 3b: Triage with Haiku (fast pre-filter for large sets)
+                if len(filtered) > 50:
+                    await queue.put(f"Quick-screening {len(filtered)} accounts...")
+                    filtered = await llm.triage_accounts(intent, filtered)
+                    await queue.put(f"{len(filtered)} accounts passed screening")
+
                 # Step 4: Rank with LLM
                 await queue.put(f"Ranking {len(filtered)} accounts by relevance...")
                 ranking = await llm.rank_accounts(intent, filtered, user_network=user_network)
@@ -362,11 +399,33 @@ async def search(request: Request):
 
             llm_pipeline_task = asyncio.create_task(run_llm_pipeline())
 
-            # --- Drain progress while both tasks run ---
+            # --- Drain progress while tasks run ---
             all_done = False
+            partial_sent = False
             while not all_done:
-                done_tasks = {t for t in [user_search_task, llm_pipeline_task] if t.done()}
-                all_done = len(done_tasks) == 2
+                all_tasks = [user_search_task, llm_pipeline_task] + bio_search_tasks
+                done_tasks = {t for t in all_tasks if t.done()}
+                all_done = len(done_tasks) == len(all_tasks)
+
+                # Stream partial results when user search finishes but LLM pipeline is still running
+                if not partial_sent and user_search_task.done() and not llm_pipeline_task.done():
+                    try:
+                        partial = user_search_task.result()
+                        if partial:
+                            from core.fast_path import merge_ranked_results as _merge
+                            partial_merged = _merge(partial, [])
+                            if partial_merged:
+                                yield {
+                                    "event": "partial_results",
+                                    "data": json.dumps({
+                                        "ranked": [_serialize_account(r) for r in partial_merged],
+                                        "quality": "moderate",
+                                        "refinement_questions": [],
+                                    }),
+                                }
+                    except Exception:
+                        pass
+                    partial_sent = True
 
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=0.5)
@@ -404,7 +463,7 @@ async def search(request: Request):
                         pass
                 yield {"event": "progress", "data": json.dumps({"message": msg})}
 
-            # --- Collect results from both legs ---
+            # --- Collect results from all legs ---
             user_search_results = []
             llm_results = []
 
@@ -413,6 +472,14 @@ async def search(request: Request):
             except Exception as e:
                 print(f"User search failed: {e}")
                 traceback.print_exc()
+
+            # Collect bio search results
+            for task in bio_search_tasks:
+                try:
+                    bio_results = task.result()
+                    user_search_results.extend(bio_results)
+                except Exception as e:
+                    print(f"Bio search failed: {e}")
 
             try:
                 llm_results = llm_pipeline_task.result()
@@ -427,12 +494,14 @@ async def search(request: Request):
                 yield {"event": "error", "data": json.dumps({"message": "No accounts found. Try broadening your search."})}
                 return
 
-            # Compute quality
-            high_scores = sum(1 for r in merged if r.relevance_score >= 7)
-            mid_scores = sum(1 for r in merged if r.relevance_score >= 5)
-            if high_scores >= 5:
+            # Compute quality using bucket counts
+            from core.models import BUCKET_SORT_ORDER
+            top_count = sum(1 for r in merged if r.bucket == "top_match")
+            strong_count = sum(1 for r in merged if r.bucket == "strong_match")
+            good_count = sum(1 for r in merged if r.bucket == "good_match")
+            if top_count >= 3 and (top_count + strong_count) >= 5:
                 quality = "strong"
-            elif high_scores >= 2 or mid_scores >= 5:
+            elif top_count >= 1 or (strong_count + good_count) >= 5:
                 quality = "moderate"
             else:
                 quality = "weak"

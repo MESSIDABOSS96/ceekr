@@ -1,0 +1,110 @@
+[
+  {
+    "query": "AI researchers working on LLMs",
+    "expected_accounts": ["kaborewang", "ylaboratory", "jlowin"],
+    "min_results": 15,
+    "category": "role_industry"
+  },
+  {
+    "query": "founders building developer tools",
+    "expected_accounts": ["mitchellh", "raaborund"],
+    "min_results": 15,
+    "category": "role_industry"
+  },
+  {
+    "query": "people discussing Rust programming",
+    "expected_accounts": ["jonhoo", "m_ou_se"],
+    "min_results": 10,
+    "category": "niche_topic"
+  },
+  {
+    "query": "machine learning engineers fine-tuning models",
+    "expected_accounts": [],
+    "min_results": 10,
+    "category": "specific_persona_topic"
+  },
+  {
+    "query": "YC founders who recently launched",
+    "expected_accounts": [],
+    "min_results": 5,
+    "category": "specific_persona_topic"
+  },
+  {
+    "query": "interesting people in San Francisco tech",
+    "expected_accounts": [],
+    "min_results": 10,
+    "category": "vague_subjective"
+  },
+  {
+    "query": "climate tech investors",
+    "expected_accounts": [],
+    "min_results": 5,
+    "category": "role_industry"
+  },
+  {
+    "query": "indie hackers shipping side projects",
+    "expected_accounts": ["levelsio", "marckohlbrugge"],
+    "min_results": 10,
+    "category": "specific_persona_topic"
+  },
+  {
+    "query": "data scientists using Python",
+    "expected_accounts": [],
+    "min_results": 10,
+    "category": "role_industry"
+  },
+  {
+    "query": "product designers at startups",
+    "expected_accounts": [],
+    "min_results": 5,
+    "category": "role_industry"
+  },
+  {
+    "query": "people writing about personal finance",
+    "expected_accounts": [],
+    "min_results": 10,
+    "category": "niche_topic"
+  },
+  {
+    "query": "janak",
+    "expected_accounts": [],
+    "min_results": 3,
+    "category": "specific_persona_topic"
+  },
+  {
+    "query": "blockchain developers building on Solana",
+    "expected_accounts": [],
+    "min_results": 5,
+    "category": "niche_topic"
+  },
+  {
+    "query": "tech people in New York",
+    "expected_accounts": [],
+    "min_results": 5,
+    "category": "location_based"
+  },
+  {
+    "query": "open source maintainers",
+    "expected_accounts": ["sindresorhus", "antfu7"],
+    "min_results": 10,
+    "category": "role_industry"
+  },
+  {
+    "query": "@karpathy",
+    "expected_accounts": ["karpathy"],
+    "min_results": 1,
+    "category": "specific_persona_topic"
+  },
+  {
+    "query": "people who are critical of AI hype",
+    "expected_accounts": [],
+    "min_results": 5,
+    "category": "vague_subjective"
+  },
+  {
+    "query": "startup founders discussing hiring challenges",
+    "expected_accounts": [],
+    "min_results": 5,
+    "category": "specific_persona_topic"
+  }
+]

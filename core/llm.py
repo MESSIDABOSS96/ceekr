@@ -9,14 +9,12 @@ import anthropic
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import (
-    ABSOLUTE_MIN_THRESHOLD,
     ANTHROPIC_API_KEY,
     ANTHROPIC_FAST_MODEL,
     ANTHROPIC_MODEL,
     MAX_BIO_LENGTH,
     MAX_TWEET_LENGTH,
     MAX_TWEETS_FOR_RANKING,
-    MIN_RESULTS_BEFORE_LOWERING,
     RANKING_BATCH_SIZE,
     RECENCY_BONUS_WINDOW_DAYS,
     STALE_ACCOUNT_DAYS,
@@ -32,7 +30,7 @@ from .models import (
 )
 from prompts.ranking import format_ranking_prompt
 from prompts.chat import format_chat_system_prompt
-from prompts.search_plan import format_search_plan_prompt
+from prompts.search_plan import format_search_plan_prompt, format_fallback_prompt
 
 
 class LLMClient:
@@ -48,7 +46,7 @@ class LLMClient:
         self, who: str, why: Optional[str] = None
     ) -> tuple[SearchIntent, list[SearchQuery]]:
         """
-        Combined intent extraction + query generation in a single Haiku call.
+        Combined intent extraction + query generation in a single Sonnet call.
 
         Always returns queries (may be empty on failure).
         """
@@ -77,12 +75,6 @@ class LLMClient:
                             "minimum": 1,
                             "maximum": 5,
                         },
-                        "min_score_threshold": {
-                            "type": "integer",
-                            "description": "Minimum relevance score to show (3-8)",
-                            "minimum": 3,
-                            "maximum": 8,
-                        },
                         "key_signals": {
                             "type": "array",
                             "description": "3-5 specific things to look for in tweets/bios",
@@ -93,9 +85,14 @@ class LLMClient:
                             "description": "2-3 things that indicate NOT the right person",
                             "items": {"type": "string"},
                         },
+                        "bio_search_terms": {
+                            "type": "array",
+                            "description": "3-4 short keyword phrases for bio/profile searches (1-3 words each)",
+                            "items": {"type": "string"},
+                        },
                         "queries": {
                             "type": "array",
-                            "description": "5 Twitter search queries",
+                            "description": "8 Twitter search queries from different angles",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -121,9 +118,9 @@ class LLMClient:
                         "topic",
                         "goal",
                         "specificity",
-                        "min_score_threshold",
                         "key_signals",
                         "anti_signals",
+                        "bio_search_terms",
                         "queries",
                     ],
                 },
@@ -133,7 +130,7 @@ class LLMClient:
         prompt = format_search_plan_prompt(who, why)
 
         response = await self.client.messages.create(
-            model=self.fast_model,
+            model=self.model,
             max_tokens=2048,
             tools=tools,
             tool_choice={"type": "tool", "name": "search_plan"},
@@ -149,8 +146,8 @@ class LLMClient:
                     topic=result.get("topic", ""),
                     goal=result.get("goal", ""),
                     specificity=result.get("specificity", 3),
-                    suggested_query_count=5,
-                    min_score_threshold=result.get("min_score_threshold", 5),
+                    suggested_query_count=8,
+                    bio_search_terms=result.get("bio_search_terms", []),
                     key_signals=result.get("key_signals", []),
                     anti_signals=result.get("anti_signals", []),
                 )
@@ -168,6 +165,145 @@ class LLMClient:
 
         # Fallback: defaults with no queries
         return SearchIntent(), []
+
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def generate_fallback_queries(
+        self,
+        intent: SearchIntent,
+        original_queries: list[str],
+        accounts_found: int,
+    ) -> list[SearchQuery]:
+        """Generate 3 broader fallback queries when initial search found too few accounts."""
+        tools = [
+            {
+                "name": "fallback_queries",
+                "description": "Generate broader fallback search queries",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "queries": {
+                            "type": "array",
+                            "description": "3 broader Twitter search queries",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "query": {
+                                        "type": "string",
+                                        "description": "The Twitter search query string",
+                                    },
+                                    "rationale": {
+                                        "type": "string",
+                                        "description": "Why this broader query helps",
+                                    },
+                                    "angle": {
+                                        "type": "string",
+                                        "description": "What angle this query takes",
+                                    },
+                                },
+                                "required": ["query", "rationale", "angle"],
+                            },
+                        },
+                    },
+                    "required": ["queries"],
+                },
+            }
+        ]
+
+        prompt = format_fallback_prompt(intent, original_queries, accounts_found)
+
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=1024,
+            tools=tools,
+            tool_choice={"type": "tool", "name": "fallback_queries"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        for block in response.content:
+            if block.type == "tool_use":
+                return [
+                    SearchQuery(
+                        query=q["query"],
+                        rationale=q["rationale"],
+                        angle=q["angle"],
+                    )
+                    for q in block.input.get("queries", [])
+                ]
+
+        return []
+
+    async def triage_accounts(
+        self,
+        intent: SearchIntent,
+        accounts: list[TwitterAccount],
+    ) -> list[TwitterAccount]:
+        """Fast triage using Haiku — filter obviously irrelevant accounts before full ranking."""
+        from prompts.triage import format_triage_prompt
+
+        # Build minimal data for triage (less tokens = faster)
+        accounts_data = []
+        for acc in accounts:
+            best_tweet = ""
+            if acc.recent_tweets:
+                best_tweet = acc.recent_tweets[0].text[:100]
+            accounts_data.append({
+                "handle": acc.handle,
+                "name": acc.name,
+                "bio": (acc.bio or "")[:100],
+                "best_tweet": best_tweet,
+            })
+
+        accounts_json = json.dumps(accounts_data, indent=2)
+
+        tools = [
+            {
+                "name": "triage",
+                "description": "Triage accounts into advance or skip",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "decisions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "handle": {"type": "string"},
+                                    "decision": {
+                                        "type": "string",
+                                        "enum": ["advance", "skip"],
+                                    },
+                                },
+                                "required": ["handle", "decision"],
+                            },
+                        },
+                    },
+                    "required": ["decisions"],
+                },
+            }
+        ]
+
+        prompt = format_triage_prompt(intent, accounts_json)
+
+        response = await self.client.messages.create(
+            model=self.fast_model,
+            max_tokens=4096,
+            tools=tools,
+            tool_choice={"type": "tool", "name": "triage"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        advance_handles: set[str] = set()
+        for block in response.content:
+            if block.type == "tool_use":
+                for d in block.input.get("decisions", []):
+                    if d.get("decision") == "advance":
+                        advance_handles.add(d["handle"].lower().lstrip("@"))
+
+        if not advance_handles:
+            # If triage returns nothing, don't filter (safety net)
+            return accounts
+
+        return [acc for acc in accounts if acc.handle.lower() in advance_handles]
 
     async def _rank_batch(
         self,
@@ -250,51 +386,40 @@ class LLMClient:
         tools = [
             {
                 "name": "rank_accounts",
-                "description": "Rank Twitter accounts by relevance with evidence-based explanations",
+                "description": "Categorize Twitter accounts into bucket tiers by relevance",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "ranked_accounts": {
                             "type": "array",
-                            "description": "Accounts sorted by relevance (highest first)",
+                            "description": "Accounts categorized by bucket tier (top_match first, then strong, good, exclude)",
                             "items": {
                                 "type": "object",
                                 "properties": {
                                     "handle": {
                                         "type": "string",
-                                        "description": "Twitter handle",
+                                        "description": "Twitter handle (without @)",
                                     },
-                                    "relevance_score": {
-                                        "type": "number",
-                                        "description": "Relevance score (1-10)",
-                                    },
-                                    "why_relevant": {
+                                    "bucket": {
                                         "type": "string",
-                                        "description": "2-3 sentence evidence-based explanation",
+                                        "enum": ["top_match", "strong_match", "good_match", "exclude"],
+                                        "description": "Bucket tier for this account",
                                     },
-                                    "evidence_highlights": {
+                                    "summary": {
+                                        "type": "string",
+                                        "description": "User-facing summary (detailed for top/strong, brief for good, empty for exclude)",
+                                    },
+                                    "highlight_tweet_indices": {
                                         "type": "array",
-                                        "description": "1-3 direct quotes from tweets/bio proving relevance",
-                                        "items": {"type": "string"},
-                                        "minItems": 1,
-                                        "maxItems": 3,
-                                    },
-                                    "confidence": {
-                                        "type": "string",
-                                        "enum": ["high", "medium", "low"],
-                                        "description": "Confidence level based on evidence strength",
-                                    },
-                                    "suggested_approach": {
-                                        "type": "string",
-                                        "description": "Optional engagement suggestion",
+                                        "description": "0-based indices of most relevant tweets",
+                                        "items": {"type": "integer"},
                                     },
                                 },
                                 "required": [
                                     "handle",
-                                    "relevance_score",
-                                    "why_relevant",
-                                    "evidence_highlights",
-                                    "confidence",
+                                    "bucket",
+                                    "summary",
+                                    "highlight_tweet_indices",
                                 ],
                             },
                         },
@@ -344,6 +469,7 @@ class LLMClient:
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Merge results from all batches
+        from core.models import BUCKET_SCORE_MAP
         accounts_by_handle = {acc.handle.lower(): acc for acc in accounts}
         all_ranked: list[RankedAccount] = []
 
@@ -355,35 +481,39 @@ class LLMClient:
             for item in result:
                 handle = item["handle"].lower().lstrip("@")
                 if handle in accounts_by_handle:
+                    bucket = item.get("bucket", "good_match")
+                    summary = item.get("summary", "")
+                    score = BUCKET_SCORE_MAP.get(bucket, 5.0)
                     all_ranked.append(
                         RankedAccount(
                             account=accounts_by_handle[handle],
-                            relevance_score=item["relevance_score"],
-                            why_relevant=item["why_relevant"],
-                            suggested_approach=item.get("suggested_approach"),
-                            evidence_highlights=item.get("evidence_highlights", []),
-                            confidence=item.get("confidence", "medium"),
+                            relevance_score=score,
+                            bucket=bucket,
+                            summary=summary,
+                            highlight_tweet_indices=item.get("highlight_tweet_indices", []),
+                            why_relevant=summary or f"Matched as {bucket.replace('_', ' ')}.",
+                            evidence_highlights=[],
+                            confidence="high" if bucket == "top_match" else "medium" if bucket == "strong_match" else "low",
                         )
                     )
 
-        # Sort by score descending
-        all_ranked.sort(key=lambda r: r.relevance_score, reverse=True)
+        # Sort by bucket tier then followers
+        from core.models import BUCKET_SORT_ORDER
+        all_ranked.sort(
+            key=lambda r: (BUCKET_SORT_ORDER.get(r.bucket, 3), -r.account.followers_count),
+        )
 
-        # Apply score threshold, progressively lowering if too few results
-        threshold = intent.min_score_threshold
-        filtered = [r for r in all_ranked if r.relevance_score >= threshold]
+        # Filter out excluded accounts
+        filtered = [r for r in all_ranked if r.bucket != "exclude"]
 
-        while len(filtered) < MIN_RESULTS_BEFORE_LOWERING and threshold > ABSOLUTE_MIN_THRESHOLD:
-            threshold = max(threshold - 1, ABSOLUTE_MIN_THRESHOLD)
-            filtered = [r for r in all_ranked if r.relevance_score >= threshold]
+        # Compute quality assessment using bucket counts
+        top_count = sum(1 for r in filtered if r.bucket == "top_match")
+        strong_count = sum(1 for r in filtered if r.bucket == "strong_match")
+        good_count = sum(1 for r in filtered if r.bucket == "good_match")
 
-        # Compute quality assessment in Python
-        high_scores = sum(1 for r in filtered if r.relevance_score >= 7)
-        mid_scores = sum(1 for r in filtered if r.relevance_score >= 5)
-
-        if high_scores >= 5:
+        if top_count >= 3 and (top_count + strong_count) >= 5:
             quality = "strong"
-        elif high_scores >= 2 or mid_scores >= 10:
+        elif top_count >= 1 or (strong_count + good_count) >= 5:
             quality = "moderate"
         else:
             quality = "weak"

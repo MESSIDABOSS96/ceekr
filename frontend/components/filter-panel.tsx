@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -56,15 +56,21 @@ export function FilterPanel({
   onFiltersChange,
   results,
 }: FilterPanelProps) {
+  const [locationInput, setLocationInput] = useState(filters.location);
   const [locationOpen, setLocationOpen] = useState(false);
+
+  // Sync local input when the committed filter changes externally (e.g. reset)
+  useEffect(() => {
+    setLocationInput(filters.location);
+  }, [filters.location]);
 
   const locations = useMemo(() => getUniqueLocations(results), [results]);
   const filteredLocations = useMemo(() => {
-    if (!filters.location) return locations;
+    if (!locationInput) return locations;
     return locations.filter((l) =>
-      l.toLowerCase().includes(filters.location.toLowerCase())
+      l.toLowerCase().includes(locationInput.toLowerCase())
     );
-  }, [locations, filters.location]);
+  }, [locations, locationInput]);
 
   const update = (partial: Partial<Filters>) => {
     onFiltersChange({ ...filters, ...partial });
@@ -78,7 +84,7 @@ export function FilterPanel({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto border-border-subtle bg-[oklch(0.16_0.004_163)] sm:max-w-lg">
+      <DialogContent className="border-border-subtle bg-[oklch(0.16_0.004_163)] sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="text-text-primary">Filters</DialogTitle>
         </DialogHeader>
@@ -140,29 +146,45 @@ export function FilterPanel({
             <Label className="text-text-secondary">Location</Label>
             <div className="relative">
               <Input
-                value={filters.location}
+                value={locationInput}
                 onChange={(e) => {
-                  update({ location: e.target.value });
+                  setLocationInput(e.target.value);
                   setLocationOpen(e.target.value.length > 0);
                 }}
                 onFocus={() => {
-                  if (filters.location) setLocationOpen(true);
+                  if (locationInput) setLocationOpen(true);
                 }}
                 onBlur={() => {
-                  // Delay to allow click on suggestion
-                  setTimeout(() => setLocationOpen(false), 150);
+                  // Delay to allow click on suggestion, then revert to committed value
+                  setTimeout(() => {
+                    setLocationOpen(false);
+                    setLocationInput(filters.location);
+                  }, 150);
                 }}
                 placeholder="e.g. San Francisco"
                 className="border-border-subtle bg-surface text-text-primary placeholder:text-text-muted"
               />
+              {filters.location && (
+                <button
+                  onClick={() => {
+                    update({ location: "" });
+                    setLocationInput("");
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-secondary text-xs"
+                  aria-label="Clear location"
+                >
+                  ✕
+                </button>
+              )}
               {locationOpen && filteredLocations.length > 0 && (
-                <div className="absolute z-50 mt-1 max-h-40 w-full overflow-y-auto rounded-lg border border-border-subtle bg-[oklch(0.19_0.004_163)] shadow-lg">
-                  {filteredLocations.map((loc) => (
+                <div className="absolute z-50 mt-1 max-h-[200px] w-full overflow-y-auto rounded-lg border border-border-subtle bg-[oklch(0.19_0.004_163)] shadow-lg">
+                  {filteredLocations.slice(0, 50).map((loc) => (
                     <button
                       key={loc}
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => {
                         update({ location: loc });
+                        setLocationInput(loc);
                         setLocationOpen(false);
                       }}
                       className="w-full px-3 py-1.5 text-left text-sm text-text-body hover:bg-twitter/10 hover:text-twitter"

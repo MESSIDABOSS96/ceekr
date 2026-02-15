@@ -34,15 +34,14 @@ Examples:
 - 4: "founders who've discussed customer discovery for B2B SaaS" — specific
 - 5: "YC founders who pivoted from consumer to enterprise in 2024" — very specific
 
-**min_score_threshold**: Minimum relevance score (3-8) to include in results.
-- Specificity 2: threshold 4 (broad search, lower bar)
-- Specificity 3: threshold 5
-- Specificity 4: threshold 6
-- Specificity 5: threshold 7 (specific search, higher bar)
+**bio_search_terms**: 3-4 short keyword phrases that would appear in the Twitter bio of the target persona. These are used for direct user/profile searches (not tweet searches). Each should be 1-3 words max.
+Examples:
+- If looking for "ML engineers fine-tuning LLMs": ["ML engineer", "machine learning", "AI researcher", "deep learning"]
+- If looking for "founders doing customer discovery": ["founder", "CEO", "building", "startup"]
 
-## Part 2: Generate 5 Twitter Search Queries
+## Part 2: Generate 8 Twitter Search Queries
 
-Always generate exactly 5 search queries.
+Always generate exactly 8 search queries.
 
 ### Twitter Search Rules (CRITICAL - read carefully)
 Twitter search is very restrictive. Complex queries return ZERO results. Follow these rules strictly:
@@ -63,12 +62,15 @@ Examples of queries that return ZERO results (DO NOT USE):
 - founder "customer interviews" hard time           (too many words!)
 
 ### Diversity Angles
-Spread your 5 queries across these categories for maximum coverage:
+Spread your 8 queries across these categories for maximum coverage:
 1. **Pain points**: People complaining, struggling, or asking for help with the topic
 2. **Identity/role**: Queries that target the persona directly (role + topic)
 3. **Tool/methodology**: People discussing specific tools, frameworks, or methods related to the topic
 4. **Achievement/sharing**: People celebrating wins, sharing results, or posting learnings
 5. **Community/debate**: Hot takes, disagreements, conference mentions, or community discussions
+6. **Help/advice**: People seeking or giving advice, recommendations, or guidance on the topic
+7. **Contrarian/critical**: Skeptical takes, criticisms, "unpopular opinion" style tweets about the topic
+8. **Building/shipping**: People announcing launches, demos, side projects, or work-in-progress related to the topic
 
 Each query should:
 - Be a quoted phrase ALONE, or a quoted phrase + ONE extra keyword. Nothing more.
@@ -81,7 +83,44 @@ Remember: these queries cast a wide net. A separate ranking step will filter for
 Use the search_plan tool to respond."""
 
 
+FALLBACK_QUERIES_PROMPT = """The initial search for the following request didn't find enough accounts. Generate 3 broader, more general queries to find more candidates.
+
+## Original Request
+Persona: {persona}
+Topic: {topic}
+Goal: {goal}
+
+## Original Queries (already tried)
+{original_queries}
+
+## Current Results
+Only found {accounts_found} accounts (need at least 30).
+
+## Instructions
+Generate 3 BROADER queries that:
+- Use more general terms than the original queries
+- Remove niche jargon in favor of common language
+- Try different phrasings or adjacent topics
+- Still follow Twitter search rules (quoted phrase alone or quoted phrase + 1 keyword)
+
+Use the fallback_queries tool to respond."""
+
+
 def format_search_plan_prompt(who: str, why: Optional[str] = None) -> str:
     """Format the combined search plan prompt with user input."""
     why_section = f"Why (context): {why}" if why else "Why (context): Not provided"
     return SEARCH_PLAN_PROMPT.format(who=who, why_section=why_section)
+
+
+def format_fallback_prompt(
+    intent, original_queries: list[str], accounts_found: int
+) -> str:
+    """Format the fallback queries prompt."""
+    queries_str = "\n".join(f"- {q}" for q in original_queries)
+    return FALLBACK_QUERIES_PROMPT.format(
+        persona=intent.persona,
+        topic=intent.topic,
+        goal=intent.goal,
+        original_queries=queries_str,
+        accounts_found=accounts_found,
+    )

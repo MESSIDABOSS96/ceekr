@@ -16,7 +16,7 @@ import type {
 
 // ── State machine ──────────────────────────────────────────
 
-type Phase = "landing" | "searching" | "results";
+type Phase = "landing" | "searching" | "partial_results" | "results";
 
 interface State {
   phase: Phase;
@@ -37,6 +37,11 @@ type Action =
   | { type: "START_SEARCH" }
   | { type: "PROGRESS"; message: string }
   | { type: "QUERIES"; queries: SearchQuery[] }
+  | {
+      type: "PARTIAL_RESULTS";
+      ranked: RankedAccount[];
+      quality: "strong" | "moderate" | "weak";
+    }
   | {
       type: "RESULTS";
       ranked: RankedAccount[];
@@ -83,6 +88,13 @@ function reducer(state: State, action: Action): State {
       };
     case "QUERIES":
       return { ...state, queries: action.queries };
+    case "PARTIAL_RESULTS":
+      return {
+        ...state,
+        phase: "partial_results",
+        results: action.ranked,
+        quality: action.quality,
+      };
     case "RESULTS":
       return {
         ...state,
@@ -170,6 +182,13 @@ export default function Home() {
             dispatch({ type: "PROGRESS", message }),
           onQueries: (queries) =>
             dispatch({ type: "QUERIES", queries }),
+          onPartialResults: (results) => {
+            dispatch({
+              type: "PARTIAL_RESULTS",
+              ranked: results.ranked,
+              quality: results.quality,
+            });
+          },
           onResults: (results) => {
             dispatch({
               type: "RESULTS",
@@ -204,7 +223,7 @@ export default function Home() {
     dispatch({ type: "RESET" });
   }, []);
 
-  const isSearching = state.phase === "searching";
+  const isSearching = state.phase === "searching" || state.phase === "partial_results";
   const showCompactHeader = state.phase !== "landing";
 
   return (
@@ -312,8 +331,13 @@ export default function Home() {
 
 
       {/* Results */}
-      {state.phase === "results" && (
+      {(state.phase === "results" || state.phase === "partial_results") && (
         <>
+          {state.phase === "partial_results" && (
+            <p className="mb-4 text-center text-sm text-text-muted animate-pulse">
+              Finding more results...
+            </p>
+          )}
           <div className="space-y-4">
             {filteredResults.map((r) => (
               <ResultCard key={r.user_id} account={r} />

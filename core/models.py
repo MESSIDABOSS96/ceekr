@@ -1,9 +1,35 @@
 """Pydantic models for Twitter Account Finder."""
 
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field
+
+
+class BucketTier(str, Enum):
+    """Ranking bucket tiers."""
+    TOP_MATCH = "top_match"
+    STRONG_MATCH = "strong_match"
+    GOOD_MATCH = "good_match"
+    EXCLUDE = "exclude"
+
+
+# Sort order: lower = better
+BUCKET_SORT_ORDER = {
+    "top_match": 0,
+    "strong_match": 1,
+    "good_match": 2,
+    "exclude": 3,
+}
+
+# Map bucket to synthetic relevance score for backward compat
+BUCKET_SCORE_MAP = {
+    "top_match": 9.0,
+    "strong_match": 7.0,
+    "good_match": 5.0,
+    "exclude": 2.0,
+}
 
 
 class UserInput(BaseModel):
@@ -26,8 +52,11 @@ class SearchIntent(BaseModel):
     topic: str = Field("", description="e.g. 'customer discovery challenges'")
     goal: str = Field("", description="e.g. 'find people to validate product idea with'")
     specificity: int = Field(3, ge=1, le=5, description="1=very broad, 5=very specific")
-    suggested_query_count: int = Field(5, ge=3, le=12, description="3-12 based on specificity")
-    min_score_threshold: int = Field(5, ge=3, le=8, description="Minimum score to show")
+    suggested_query_count: int = Field(8, ge=3, le=12, description="3-12 based on specificity")
+    bio_search_terms: list[str] = Field(
+        default_factory=list,
+        description="3-4 short keyword phrases for bio/profile searches",
+    )
     key_signals: list[str] = Field(
         default_factory=list,
         description="3-5 specific things to look for in tweets/bios that confirm relevance",
@@ -121,6 +150,16 @@ class RankedAccount(BaseModel):
     account: TwitterAccount = Field(..., description="The Twitter account")
     relevance_score: float = Field(
         ..., ge=1, le=10, description="Relevance score (1-10)"
+    )
+    bucket: str = Field(
+        "good_match", description="Bucket tier: top_match, strong_match, good_match, exclude"
+    )
+    summary: str = Field(
+        "", description="User-facing summary of why this person matches"
+    )
+    highlight_tweet_indices: list[int] = Field(
+        default_factory=list,
+        description="Indices of highlighted tweets in recent_tweets",
     )
     why_relevant: str = Field(
         ..., description="2-3 sentence evidence-based explanation of why this person is relevant"

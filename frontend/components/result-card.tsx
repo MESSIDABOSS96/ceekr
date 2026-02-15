@@ -8,12 +8,34 @@ function formatCount(count: number): string {
   return String(count);
 }
 
+const BUCKET_STYLES: Record<string, { label: string; className: string }> = {
+  top_match: {
+    label: "Top Match",
+    className: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+  },
+  strong_match: {
+    label: "Strong Match",
+    className: "bg-blue-500/15 text-blue-400 border-blue-500/30",
+  },
+  good_match: {
+    label: "Good Match",
+    className: "bg-zinc-500/15 text-zinc-400 border-zinc-500/30",
+  },
+};
+
 interface ResultCardProps {
   account: RankedAccount;
 }
 
 export function ResultCard({ account: r }: ResultCardProps) {
   const pfpUrl = r.profile_image_url?.replace("_normal.", "_bigger.") || "";
+  const bucketStyle = BUCKET_STYLES[r.bucket] || BUCKET_STYLES.good_match;
+
+  // Get highlighted tweets
+  const highlightedTweets = r.highlight_tweet_indices
+    ?.map((i) => r.recent_tweets[i])
+    .filter(Boolean)
+    .slice(0, 2);
 
   return (
     <a
@@ -42,6 +64,11 @@ export function ResultCard({ account: r }: ResultCardProps) {
           </div>
           <p className="text-[0.88rem] text-text-secondary">@{r.handle}</p>
         </div>
+        <span
+          className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[0.72rem] font-medium ${bucketStyle.className}`}
+        >
+          {bucketStyle.label}
+        </span>
       </div>
 
       {/* Metadata */}
@@ -50,10 +77,24 @@ export function ResultCard({ account: r }: ResultCardProps) {
         {r.location && <> &middot; {r.location}</>}
       </p>
 
-      {/* Why relevant */}
+      {/* Summary / Why relevant */}
       <p className="text-[0.88rem] leading-relaxed text-text-body">
-        {r.why_relevant}
+        {r.summary || r.why_relevant}
       </p>
+
+      {/* Highlighted tweets */}
+      {highlightedTweets && highlightedTweets.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {highlightedTweets.map((tweet) => (
+            <div
+              key={tweet.id}
+              className="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 text-[0.82rem] text-text-secondary"
+            >
+              <p className="line-clamp-3">{tweet.text}</p>
+            </div>
+          ))}
+        </div>
+      )}
     </a>
   );
 }

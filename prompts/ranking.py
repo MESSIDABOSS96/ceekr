@@ -1,8 +1,8 @@
-"""Prompt for ranking Twitter accounts by relevance."""
+"""Prompt for ranking Twitter accounts by relevance using bucket tiers."""
 
 from core.models import SearchIntent
 
-RANKING_PROMPT = """You are an expert at evaluating whether Twitter accounts are relevant for a specific purpose. Analyze the provided accounts and rank them by relevance.
+RANKING_PROMPT = """You are an expert at evaluating whether Twitter accounts are relevant for a specific purpose. Categorize each account into a bucket tier.
 
 ## User's Goal (Structured)
 Looking for: {persona}
@@ -12,85 +12,68 @@ Purpose: {goal}
 ## Key Signals (things that CONFIRM this is the right person)
 {key_signals}
 
-## Anti-Signals (things that DISQUALIFY — score low if any match)
+## Anti-Signals (things that DISQUALIFY)
 {anti_signals}
 
-## Evaluation Dimensions
+## Bucket Tiers
 
-For each account, evaluate across these dimensions and combine into a single 1-10 score:
+Assign each account to exactly ONE bucket:
+
+### top_match
+The ideal result. This person IS the persona described, ACTIVELY discusses the exact topic, and has recent evidence (within last 30 days). Bio, tweets, and focus are a clear match. Reserve for the best ~10-15% of accounts.
+
+### strong_match
+Right persona and discusses related topics. May be slightly less recent (1-3 months) or slightly adjacent to the exact topic requested. Someone the user would want to connect with.
+
+### good_match
+Right general area but weaker evidence. Topic discussion may be older (3-6 months), or right topic but different persona, or limited tweet evidence. Still worth showing.
+
+### exclude
+Irrelevant, spam, stale (>6 months without relevant activity), or anti-signals match. Do NOT show to the user.
+
+## Evaluation Criteria
+
+For each account, evaluate:
 
 **1. Topic Relevance** (most important)
 - Are they actively discussing the topic? Not just mentioning a keyword once.
-- Check key signals above — how many match?
-- Check anti-signals — if any match, score low.
+- Check key signals — how many match?
+- Check anti-signals — if any match, lean toward exclude.
 
-**2. Recency of Activity** (second most important)
-- Each account has pre-computed `days_since_newest_tweet` (float) and `activity_status` ("active" / "somewhat_active" / "stale") fields.
-- **HARD CEILING: If `activity_status` is "stale" (>6 months since last tweet), the score CANNOT exceed 5 and confidence MUST be "low".**
-- "active" accounts (tweeted within last 30 days) on the topic are significantly more valuable.
-- "somewhat_active" accounts (30-180 days) are acceptable but less valuable.
-- A recent mediocre tweet is more useful to the user than a perfect tweet from 2 years ago — the user wants to connect with people who are active NOW.
+**2. Recency of Activity**
+- Each account has `days_since_newest_tweet` and `activity_status` fields.
+- "stale" accounts (>6 months) should be good_match at best, never top_match or strong_match.
+- "active" accounts (within 30 days) are significantly more valuable.
 
-**3. Credibility & Accomplishment**
-- Engagement quality: Do their relevant tweets get meaningful engagement (likes, replies)?
-- Engagement-to-following ratio: High engagement relative to follower count = genuine influence.
-- Evidence of accomplishments: Bio or tweets mention concrete work, projects, roles.
-- Verified or high-quality account indicators.
+**3. Evidence Quality**
+- Multiple relevant tweets > one tweet
+- Original thoughts > retweets
+- High engagement relative to follower count = genuine influence
 
-**4. Content Consistency**
-- Do multiple tweets show sustained interest in the topic (not a one-off mention)?
-- Is their bio aligned with the topic area?
-
-**5. Accessibility & Engagement Potential**
-- Follower count: 1K-100K is the sweet spot for engagement potential.
-- If network_match present: warm connection boosts value.
-
-**6. Passion & Depth**
-- Are they sharing original thoughts or just retweeting?
-- Do they express strong opinions, share personal experiences, or contribute original insights?
-- Are they a practitioner (doing the thing) vs. commentator (talking about it)?
-
-## Scoring Anchors (1-10)
-- 9-10: EXCEPTIONAL. Exactly the persona described, RECENTLY (within last 30 days) discussing the exact topic. Bio, tweets, and focus are a near-perfect match. Reserve for <5% of accounts.
-- 7-8: STRONG. Right persona, discussed related topics recently (within last 2-3 months). Someone the user would definitely want to connect with.
-- 5-6: MODERATE. Right general area but topic discussion may be older (3-6 months), or right topic but different persona.
-- 3-4: WEAK. Stale accounts land here even if once highly relevant. Tangential connection at best.
-- 1-2: POOR. Irrelevant or spam.
-
-Network bonuses (bake into score):
-- "mutual" (you follow each other): +0.5 point boost — warm connection
-- "you_follow" or "follows_you": +0.25 point boost — existing relationship
-
-Distribution guidance: Most accounts should score 3-6. Only truly exceptional matches get 8+. If most accounts score 7+, you are being too generous.
-
-### Scoring Examples
-If the user is looking for "founders discussing customer discovery":
-- Score 9: Bio: "Building [SaaS]. Failed 2 startups." Tweets (3 days ago): "Just did 30 customer interviews and changed our product direction" — active, exact match
-- Score 6: Bio: "Product Manager at BigCorp." Tweets (2 months ago): "Customer research is underrated in product development" — somewhat recent, adjacent
-- Score 4: Bio: "Building [SaaS]." activity_status: "stale" — was relevant but hasn't tweeted in 7 months, capped at 5
-- Score 3: Bio: "Tech news." Tweets: Shared article about customer discovery
-- Score 1: Bio: "Web3 enthusiast." Tweet mentioned "discovery" in unrelated context
+**4. Network Match** (if present)
+- "mutual" connection: slight boost
+- "you_follow" or "follows_you": minor boost
 
 ## Output Requirements
 
-For EACH account you must provide:
+For EACH account provide:
 
-**why_relevant**: 2-3 sentences a user reads. Reference SPECIFIC evidence including recency:
-  BAD: "This person discusses AI topics." (vague garbage)
-  GOOD: "ML engineer at Google who 3 days ago shared results from fine-tuning Llama 3 on custom datasets. Their tweets show deep technical knowledge with posts about LoRA training getting 200+ likes. Bio confirms they lead an ML team." (specific, proof-backed, mentions recency)
+**handle**: Twitter handle (without @)
 
-**evidence_highlights**: 1-3 DIRECT QUOTES from their tweets or bio. Copy relevant snippets verbatim. These are shown to the user as proof.
+**bucket**: One of: top_match, strong_match, good_match, exclude
 
-**confidence**:
-  "high" — Bio + multiple RECENT tweets + engagement all confirm relevance
-  "medium" — Some evidence but gaps (e.g., relevant tweets but bio doesn't match, or tweets are a few months old)
-  "low" — Marginal match, stale accounts (>6 months), or included because few better options
+**summary**: User-facing explanation. Tailor verbosity to bucket:
+- top_match / strong_match: 2-3 sentences with SPECIFIC evidence. Reference tweets, bio, engagement. Mention recency.
+  GOOD: "ML engineer at Google who 3 days ago shared results from fine-tuning Llama 3. Their tweets show deep technical knowledge with posts about LoRA training getting 200+ likes."
+- good_match: 1 sentence explaining the connection.
+  GOOD: "Discusses AI topics occasionally, bio mentions working in ML."
+- exclude: Leave empty string.
 
-**suggested_approach**: Optional suggestion for how to engage with this person.
+**highlight_tweet_indices**: Indices (0-based) of the most relevant tweets from their recent_tweets array. Up to 3 for top/strong, 1 for good, empty for exclude.
 
-Return accounts sorted by score (highest first).
+Return accounts with top_match first, then strong_match, then good_match, then exclude.
 
-## Accounts to Rank
+## Accounts to Evaluate
 {accounts_json}
 """
 

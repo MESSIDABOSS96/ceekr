@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from config import FAST_PATH_MAX_RESULTS
 
-from .models import NetworkInfo, RankedAccount, Tweet, TwitterAccount
+from .models import BUCKET_SORT_ORDER, NetworkInfo, RankedAccount, Tweet, TwitterAccount
 
 if TYPE_CHECKING:
     from .auth import UserNetwork
@@ -142,6 +142,8 @@ async def execute_handle_lookup(
         RankedAccount(
             account=account,
             relevance_score=10,
+            bucket="top_match",
+            summary=f"Direct profile match for @{clean_handle}.",
             why_relevant=f"Direct profile match for @{clean_handle}.",
             confidence="high",
             evidence_highlights=[f"Profile: {account.bio or 'No bio'}"],
@@ -246,10 +248,20 @@ async def score_user_search_results(
                 )
                 # Normalize raw score (0-100) to 1-10 scale
                 normalized = max(1.0, min(10.0, round(raw_score / 10, 1)))
+                # Assign heuristic bucket from score
+                if normalized >= 8:
+                    bucket = "top_match"
+                elif normalized >= 6:
+                    bucket = "strong_match"
+                else:
+                    bucket = "good_match"
+                summary = f"Profile match for \"{query}\". {account.name} (@{account.handle})."
                 return RankedAccount(
                     account=account,
                     relevance_score=normalized,
-                    why_relevant=f"Profile match for \"{query}\". {account.name} (@{account.handle}).",
+                    bucket=bucket,
+                    summary=summary,
+                    why_relevant=summary,
                     confidence="high" if normalized >= 7 else "medium" if normalized >= 4 else "low",
                     evidence_highlights=[f"Bio: {account.bio or 'No bio'}"],
                 )
@@ -285,10 +297,19 @@ async def _try_profile_lookups(
         # Score using the same weighted system instead of blanket 10
         raw_score = _score_user_match(user_data, query)
         normalized = max(1.0, min(10.0, round(raw_score / 10, 1)))
+        if normalized >= 8:
+            bucket = "top_match"
+        elif normalized >= 6:
+            bucket = "strong_match"
+        else:
+            bucket = "good_match"
+        summary = f"Direct profile match for @{account.handle}."
         return RankedAccount(
             account=account,
             relevance_score=normalized,
-            why_relevant=f"Direct profile match for @{account.handle}.",
+            bucket=bucket,
+            summary=summary,
+            why_relevant=summary,
             confidence="high" if normalized >= 7 else "medium" if normalized >= 4 else "low",
             evidence_highlights=[f"Bio: {account.bio or 'No bio'}"],
         )
@@ -396,16 +417,26 @@ def score_accounts_fast(
         if acc.bio:
             evidence.append(f"Bio: {acc.bio[:200]}")
 
+        # Assign heuristic bucket from score
+        if score >= 8:
+            bucket = "top_match"
+        elif score >= 6:
+            bucket = "strong_match"
+        else:
+            bucket = "good_match"
+
         scored.append(RankedAccount(
             account=acc,
             relevance_score=score,
+            bucket=bucket,
+            summary=why,
             why_relevant=why,
             confidence="high" if score >= 7 else "medium" if score >= 4 else "low",
             evidence_highlights=evidence,
         ))
 
-    # Sort by score descending, then followers as tiebreaker
-    scored.sort(key=lambda r: (r.relevance_score, r.account.followers_count), reverse=True)
+    # Sort by bucket tier then followers as tiebreaker
+    scored.sort(key=lambda r: (BUCKET_SORT_ORDER.get(r.bucket, 3), -r.account.followers_count))
     return scored
 
 
@@ -414,14 +445,22 @@ def merge_ranked_results(
     llm_results: list[RankedAccount],
     max_results: int = FAST_PATH_MAX_RESULTS,
 ) -> list[RankedAccount]:
-    """Merge user search and LLM pipeline results. Deduplicate by user_id, keep higher score."""
+    """Merge user search and LLM pipeline results. Deduplicate by user_id, keep better bucket."""
     by_user_id: dict[str, RankedAccount] = {}
 
     for r in user_search_results + llm_results:
         uid = r.account.user_id
-        if uid not in by_user_id or r.relevance_score > by_user_id[uid].relevance_score:
+        if uid not in by_user_id:
             by_user_id[uid] = r
+        else:
+            existing = by_user_id[uid]
+            # Keep the one with the better (lower sort order) bucket
+            if BUCKET_SORT_ORDER.get(r.bucket, 3) < BUCKET_SORT_ORDER.get(existing.bucket, 3):
+                by_user_id[uid] = r
 
     merged = list(by_user_id.values())
-    merged.sort(key=lambda r: (r.relevance_score, r.account.followers_count), reverse=True)
+    # Filter out excluded accounts
+    merged = [r for r in merged if r.bucket != "exclude"]
+    # Sort by bucket tier then followers
+    merged.sort(key=lambda r: (BUCKET_SORT_ORDER.get(r.bucket, 3), -r.account.followers_count))
     return merged[:max_results]

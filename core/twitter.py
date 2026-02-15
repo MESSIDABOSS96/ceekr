@@ -13,8 +13,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import (
     BOT_KEYWORDS,
-    MAX_FOLLOWERS_THRESHOLD,
-    MIN_BIO_LENGTH,
     MIN_FOLLOWERS_THRESHOLD,
     RECENCY_BONUS_WINDOW_DAYS,
     RECENCY_HALF_LIFE_DAYS,
@@ -404,16 +402,6 @@ class SearchOrchestrator:
 
             # Too few followers (bots/inactive)
             if acc.followers_count < MIN_FOLLOWERS_THRESHOLD:
-                removed += 1
-                continue
-
-            # Too many followers (celebrities, unreachable)
-            if acc.followers_count > MAX_FOLLOWERS_THRESHOLD:
-                removed += 1
-                continue
-
-            # Bio too short (no signal for ranking)
-            if len(acc.bio or "") < MIN_BIO_LENGTH:
                 removed += 1
                 continue
 
