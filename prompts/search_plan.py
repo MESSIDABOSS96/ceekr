@@ -27,6 +27,21 @@ Examples:
 - If looking for practitioners: ["only retweets news articles without commentary", "bio is purely promotional/marketing", "tweets are all job postings or hiring"]
 - If looking for founders: ["works at large corporation in non-founder role", "only shares motivational quotes", "account is a news aggregator or bot"]
 
+**mandatory_terms**: 0-3 niche-specific terms that are the NON-NEGOTIABLE core of this search.
+
+Rules:
+- If the query has a SPECIFIC product/project/technology name → that IS a mandatory term
+- If the query is inherently broad (e.g., "AI researchers", "founders") → mandatory_terms = []
+- Use the NICHE SPECIFIER, not the role. "openclaw researchers" → ["openclaw"], NOT ["researchers"]
+- Include reasonable variations (e.g., ["openclaw", "open-claw"])
+- Maximum 3 terms
+
+Examples:
+- "openclaw researchers" → ["openclaw"]
+- "langchain contributors" → ["langchain"]
+- "AI researchers" → []
+- "founders" → []
+
 **specificity** (1-5): How specific is this request?
 - 1: "people in tech" — too broad to search meaningfully
 - 2: "AI researchers" — broad but has direction
@@ -39,9 +54,9 @@ Examples:
 - If looking for "ML engineers fine-tuning LLMs": ["ML engineer", "machine learning", "AI researcher", "deep learning"]
 - If looking for "founders doing customer discovery": ["founder", "CEO", "building", "startup"]
 
-## Part 2: Generate 8 Twitter Search Queries
+## Part 2: Generate 5 Twitter Search Queries
 
-Always generate exactly 8 search queries.
+Always generate exactly 5 search queries.
 
 ### Twitter Search Rules (CRITICAL - read carefully)
 Twitter search is very restrictive. Complex queries return ZERO results. Follow these rules strictly:
@@ -61,16 +76,20 @@ Examples of queries that return ZERO results (DO NOT USE):
 - "UX research" startup difficult expensive         (too many words!)
 - founder "customer interviews" hard time           (too many words!)
 
-### Diversity Angles
-Spread your 8 queries across these categories for maximum coverage:
-1. **Pain points**: People complaining, struggling, or asking for help with the topic
-2. **Identity/role**: Queries that target the persona directly (role + topic)
-3. **Tool/methodology**: People discussing specific tools, frameworks, or methods related to the topic
-4. **Achievement/sharing**: People celebrating wins, sharing results, or posting learnings
-5. **Community/debate**: Hot takes, disagreements, conference mentions, or community discussions
-6. **Help/advice**: People seeking or giving advice, recommendations, or guidance on the topic
-7. **Contrarian/critical**: Skeptical takes, criticisms, "unpopular opinion" style tweets about the topic
-8. **Building/shipping**: People announcing launches, demos, side projects, or work-in-progress related to the topic
+### Query Strategy: Think Like a Searcher
+
+For each query, ask yourself: "If I was manually searching Twitter to find this person, what would I type?" Think about how the target person would naturally surface:
+
+1. **Builders/creators**: What they'd say when sharing work ("built with [topic]", "my [topic] project", "shipped" [topic])
+2. **Self-identification**: How they describe themselves or their role ("[topic] contributor", "working on [topic]", "maintaining [topic]")
+3. **Teaching/explaining**: How they'd share knowledge ("[topic] tutorial", "how to use [topic]", "here's how [topic] works")
+4. **Opinions/enthusiasm**: How they'd express views ("love [topic]", "[topic] is", "why [topic]")
+5. **Community/events**: How they'd engage with peers ("[topic] community", "[topic]" meetup, "[topic]" release)
+6. **Discovery phrases**: How others would mention them ("check out" [topic], "best [topic]", "recommend" [topic])
+7. **Experience/struggles**: Hands-on experience signals ("debugging [topic]", "learning [topic]", "migrating to [topic]")
+8. **Professional context**: Work-related mentions ("using [topic] at", "[topic] integration", "[topic] in production")
+
+The goal is maximum PRECISION — queries that almost exclusively surface the right people, not broad queries that need heavy filtering afterward.
 
 Each query should:
 - Be a quoted phrase ALONE, or a quoted phrase + ONE extra keyword. Nothing more.
@@ -78,7 +97,7 @@ Each query should:
 - NEVER use parentheses, NEVER combine more than 3 total terms
 - Avoid common spam triggers (giveaway, follow4follow, etc.)
 
-Remember: these queries cast a wide net. A separate ranking step will filter for relevance, so strongly favor recall over precision.
+Remember: if the topic contains specific niche terms (e.g., "openclaw", "customer discovery"), every query MUST include at least one of those specific terms. Never generate queries that only use the generic category (e.g., just "researchers" without "openclaw"). However, if the topic is inherently broad (e.g., "AI researchers", "founders"), broad queries are fine. A separate ranking step will filter for relevance, but it cannot fix queries that are too broad to begin with.
 
 Use the search_plan tool to respond."""
 

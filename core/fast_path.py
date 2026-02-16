@@ -89,6 +89,7 @@ async def _build_account_from_user(
                 like_count=t.get("favorite_count", 0),
                 retweet_count=t.get("retweet_count", 0),
                 reply_count=t.get("reply_count", 0),
+                media_urls=t.get("media_urls", []),
             )
             for t in timeline
         ]
@@ -155,51 +156,48 @@ async def execute_handle_lookup(
 
 
 def _score_user_match(user_data: dict, query: str) -> float:
-    """Score a user search result with weighted disambiguation (0-100 raw)."""
+    """Score a user search result. Credibility only amplifies relevance, never replaces it."""
     query_lower = query.lower().strip()
     query_words = query_lower.split()
 
     name = (user_data.get("name") or "").lower()
-    handle = (user_data.get("screen_name") or "").lower()
     bio = (user_data.get("description") or "").lower()
     followers = user_data.get("followers_count", 0)
     verified = user_data.get("verified", False) or user_data.get("is_blue_verified", False)
     tweet_count = user_data.get("statuses_count", 0)
 
-    score = 0.0
+    # --- Relevance signals (name + bio) ---
+    relevance = 0.0
 
-    # --- Name match (0-40 pts) ---
+    # Name match (0-40 pts)
     if query_lower == name:
-        score += 40  # exact match
+        relevance += 40
     elif query_lower in name:
-        score += 35  # substring match
+        relevance += 35
     elif all(w in name for w in query_words):
-        score += 30  # all words present
+        relevance += 30
     else:
         ratio = SequenceMatcher(None, query_lower, name).ratio()
         if ratio > 0.5:
-            score += 40 * ratio
+            relevance += 40 * ratio
 
-    # --- Follower signal (0-30 pts, log-scaled) ---
-    if followers > 0:
-        # log10(200M) ≈ 8.3 → 30 pts, log10(100K) ≈ 5 → ~18 pts, log10(1K) ≈ 3 → ~11 pts
-        score += min(30, math.log10(max(followers, 1)) * 3.6)
-
-    # --- Verified bonus (0-10 pts) ---
-    if verified:
-        score += 10
-
-    # --- Activity signal (0-10 pts) ---
-    if tweet_count > 100:
-        score += 10
-    elif tweet_count > 10:
-        score += 5
-
-    # --- Bio relevance (0-10 pts) ---
+    # Bio relevance (0-10 pts)
     if any(w in bio for w in query_words):
-        score += 10
+        relevance += 10
 
-    return score
+    # --- Credibility signals (only boost if relevance > 0) ---
+    credibility = 0.0
+    if relevance > 0:
+        if followers > 0:
+            credibility += min(30, math.log10(max(followers, 1)) * 3.6)
+        if verified:
+            credibility += 10
+        if tweet_count > 100:
+            credibility += 10
+        elif tweet_count > 10:
+            credibility += 5
+
+    return relevance + credibility
 
 
 async def score_user_search_results(
@@ -358,50 +356,55 @@ def score_accounts_fast(
     scored: list[RankedAccount] = []
 
     for acc in accounts:
-        points = 0.0
         signals: list[str] = []
 
         name_lower = acc.name.lower()
         handle_lower = acc.handle.lower()
         bio_lower = (acc.bio or "").lower()
 
-        # --- Display name match (0-50 pts, up from 40) ---
+        # --- Relevance signals (name, handle, bio) ---
+        relevance = 0.0
+
+        # Display name match (0-50 pts)
         name_ratio = SequenceMatcher(None, query_lower, name_lower).ratio()
         if query_lower in name_lower:
-            points += 50
+            relevance += 50
             signals.append(f'Name contains "{query}"')
         elif name_ratio > 0.6:
-            points += 50 * name_ratio
+            relevance += 50 * name_ratio
             signals.append("Name closely matches query")
 
-        # --- Handle match (0-35 pts) ---
+        # Handle match (0-35 pts)
         handle_clean = handle_lower.replace("_", "").replace(".", "")
         if query_no_spaces == handle_clean:
-            points += 35
+            relevance += 35
             signals.append(f"Handle @{acc.handle} is an exact match")
         elif query_no_spaces in handle_clean:
-            points += 25
+            relevance += 25
             signals.append(f"Handle @{acc.handle} contains query")
         else:
             handle_ratio = SequenceMatcher(None, query_no_spaces, handle_clean).ratio()
             if handle_ratio > 0.6:
-                points += 35 * handle_ratio
+                relevance += 35 * handle_ratio
                 signals.append(f"Handle @{acc.handle} closely matches")
 
-        # --- Follower signal (0-25 pts, up from 10 tiebreaker) ---
-        if acc.followers_count > 0:
-            follower_pts = min(25, math.log10(max(acc.followers_count, 1)) * 3.0)
-            points += follower_pts
-            if acc.followers_count >= 100_000:
-                signals.append(f"{acc.followers_count:,} followers")
-
-        # --- Bio mention (0-10 pts) ---
+        # Bio mention (0-10 pts)
         if query_lower in bio_lower:
-            points += 10
+            relevance += 10
             signals.append("Bio mentions query")
         elif any(w in bio_lower for w in query_words):
-            points += 5
+            relevance += 5
             signals.append("Bio contains related terms")
+
+        # --- Credibility signals (only boost if relevance > 0) ---
+        credibility = 0.0
+        if relevance > 0:
+            if acc.followers_count > 0:
+                credibility = min(25, math.log10(max(acc.followers_count, 1)) * 3.0)
+                if acc.followers_count >= 100_000:
+                    signals.append(f"{acc.followers_count:,} followers")
+
+        points = relevance + credibility
 
         # Normalize to 1-10 scale (max raw ≈ 120)
         score = max(1.0, min(10.0, round(points / 12, 1)))
@@ -445,17 +448,22 @@ def merge_ranked_results(
     llm_results: list[RankedAccount],
     max_results: int = FAST_PATH_MAX_RESULTS,
 ) -> list[RankedAccount]:
-    """Merge user search and LLM pipeline results. Deduplicate by user_id, keep better bucket."""
+    """Merge user search and LLM pipeline results. LLM judgment is authoritative."""
     by_user_id: dict[str, RankedAccount] = {}
 
-    for r in user_search_results + llm_results:
+    # LLM results first (authoritative)
+    for r in llm_results:
+        by_user_id[r.account.user_id] = r
+
+    # Fast path results: only include if LLM also found them (boost) or very high confidence
+    llm_user_ids = set(by_user_id.keys())
+    for r in user_search_results:
         uid = r.account.user_id
-        if uid not in by_user_id:
-            by_user_id[uid] = r
-        else:
+        if uid in llm_user_ids:
+            # LLM already evaluated — only upgrade bucket if fast path scored higher
             existing = by_user_id[uid]
-            # Keep the one with the better (lower sort order) bucket
-            if BUCKET_SORT_ORDER.get(r.bucket, 3) < BUCKET_SORT_ORDER.get(existing.bucket, 3):
+            if existing.bucket != "exclude" and \
+               BUCKET_SORT_ORDER.get(r.bucket, 3) < BUCKET_SORT_ORDER.get(existing.bucket, 3):
                 by_user_id[uid] = r
 
     merged = list(by_user_id.values())

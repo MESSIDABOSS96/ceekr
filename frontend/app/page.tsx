@@ -2,6 +2,7 @@
 
 import { useReducer, useRef, useCallback, useMemo, useState, useEffect } from "react";
 import { SearchBox } from "@/components/search-box";
+import { ProgressRing } from "@/components/progress-ring";
 import { FilterChips } from "@/components/filter-chips";
 import { FilterPanel } from "@/components/filter-panel";
 import { ResultCard } from "@/components/result-card";
@@ -16,11 +17,12 @@ import type {
 
 // ── State machine ──────────────────────────────────────────
 
-type Phase = "landing" | "searching" | "partial_results" | "results";
+type Phase = "landing" | "searching" | "results";
 
 interface State {
   phase: Phase;
   query: string;
+  searchedQuery: string;
   progressMessages: string[];
   queries: SearchQuery[];
   results: RankedAccount[];
@@ -38,11 +40,6 @@ type Action =
   | { type: "PROGRESS"; message: string }
   | { type: "QUERIES"; queries: SearchQuery[] }
   | {
-      type: "PARTIAL_RESULTS";
-      ranked: RankedAccount[];
-      quality: "strong" | "moderate" | "weak";
-    }
-  | {
       type: "RESULTS";
       ranked: RankedAccount[];
       quality: "strong" | "moderate" | "weak";
@@ -56,6 +53,7 @@ type Action =
 const initialState: State = {
   phase: "landing",
   query: "",
+  searchedQuery: "",
   progressMessages: [],
   queries: [],
   results: [],
@@ -74,6 +72,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         phase: "searching",
+        searchedQuery: state.query,
         progressMessages: [],
         queries: [],
         results: [],
@@ -88,13 +87,6 @@ function reducer(state: State, action: Action): State {
       };
     case "QUERIES":
       return { ...state, queries: action.queries };
-    case "PARTIAL_RESULTS":
-      return {
-        ...state,
-        phase: "partial_results",
-        results: action.ranked,
-        quality: action.quality,
-      };
     case "RESULTS":
       return {
         ...state,
@@ -118,6 +110,22 @@ function reducer(state: State, action: Action): State {
     default:
       return state;
   }
+}
+
+// ── Progress helper ───────────────────────────────────────
+
+function getSearchProgress(state: State): number {
+  if (state.phase === "results") return 100;
+  const msg = state.progressMessages[state.progressMessages.length - 1] ?? "";
+  if (msg.startsWith("Ranking")) return 85;
+  if (msg.startsWith("Narrowed")) return 75;
+  if (msg.startsWith("Sifting")) return 70;
+  if (msg.startsWith("broadening") || msg.toLowerCase().includes("broadening")) return 55;
+  if (msg.startsWith("Searching")) return 50;
+  if (state.queries.length > 0) return 30;
+  if (msg.startsWith("Understanding")) return 15;
+  if (state.progressMessages.length > 0) return 5;
+  return 0;
 }
 
 // ── Page ───────────────────────────────────────────────────
@@ -182,13 +190,6 @@ export default function Home() {
             dispatch({ type: "PROGRESS", message }),
           onQueries: (queries) =>
             dispatch({ type: "QUERIES", queries }),
-          onPartialResults: (results) => {
-            dispatch({
-              type: "PARTIAL_RESULTS",
-              ranked: results.ranked,
-              quality: results.quality,
-            });
-          },
           onResults: (results) => {
             dispatch({
               type: "RESULTS",
@@ -223,7 +224,7 @@ export default function Home() {
     dispatch({ type: "RESET" });
   }, []);
 
-  const isSearching = state.phase === "searching" || state.phase === "partial_results";
+  const isSearching = state.phase === "searching";
   const showCompactHeader = state.phase !== "landing";
 
   return (
@@ -250,8 +251,16 @@ export default function Home() {
               searching={isSearching}
             />
             {isSearching && state.progressMessages.length > 0 && (
-              <p className="mt-4 text-center text-sm text-text-muted animate-pulse">
-                {state.progressMessages[state.progressMessages.length - 1]}
+              <div className="mt-4 flex items-center justify-center gap-2.5">
+                <p className="text-sm text-text-muted animate-pulse">
+                  {state.progressMessages[state.progressMessages.length - 1]}
+                </p>
+                <ProgressRing percentage={getSearchProgress(state)} size={20} />
+              </div>
+            )}
+            {state.phase === "results" && state.searchedQuery && (
+              <p className="mt-4 text-center text-sm text-text-muted">
+                Showing {filteredResults.length} result{filteredResults.length !== 1 ? "s" : ""} for &ldquo;{state.searchedQuery}&rdquo;
               </p>
             )}
           </div>
@@ -291,9 +300,12 @@ export default function Home() {
               searching={isSearching}
             />
             {isSearching && state.progressMessages.length > 0 && (
-              <p className="mt-4 text-center text-sm text-text-muted animate-pulse">
-                {state.progressMessages[state.progressMessages.length - 1]}
-              </p>
+              <div className="mt-4 flex items-center justify-center gap-2.5">
+                <p className="text-sm text-text-muted animate-pulse">
+                  {state.progressMessages[state.progressMessages.length - 1]}
+                </p>
+                <ProgressRing percentage={getSearchProgress(state)} size={20} />
+              </div>
             )}
           </div>
         </div>
@@ -331,13 +343,8 @@ export default function Home() {
 
 
       {/* Results */}
-      {(state.phase === "results" || state.phase === "partial_results") && (
+      {state.phase === "results" && (
         <>
-          {state.phase === "partial_results" && (
-            <p className="mb-4 text-center text-sm text-text-muted animate-pulse">
-              Finding more results...
-            </p>
-          )}
           <div className="space-y-4">
             {filteredResults.map((r) => (
               <ResultCard key={r.user_id} account={r} />

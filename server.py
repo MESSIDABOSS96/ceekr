@@ -37,6 +37,40 @@ from core.fast_path import (
 from core.llm import LLMClient
 from core.twitter import SearchOrchestrator, TwitterClient
 
+
+# Generic words that should NOT be treated as mandatory niche terms.
+# If a query word isn't in this set (and is long enough), it's likely a niche specifier.
+_GENERIC_QUERY_WORDS = frozenset({
+    # Adjectives / qualifiers
+    "top", "best", "popular", "famous", "leading", "prominent", "notable",
+    "biggest", "largest", "major", "great", "good", "new", "recent", "active",
+    # Roles / personas
+    "researcher", "researchers", "developer", "developers", "engineer", "engineers",
+    "founder", "founders", "creator", "creators", "builder", "builders",
+    "contributor", "contributors", "maintainer", "maintainers",
+    "scientist", "scientists", "expert", "experts", "professional", "professionals",
+    "designer", "designers", "writer", "writers", "author", "authors",
+    "analyst", "analysts", "consultant", "consultants", "advocate", "advocates",
+    "influencer", "influencers", "leader", "leaders", "speaker", "speakers",
+    "educator", "educators", "teacher", "teachers", "professor", "professors",
+    "investor", "investors", "advisor", "advisors",
+    # Common filler / stop words
+    "find", "search", "looking", "who", "are", "the", "a", "an", "in", "on",
+    "for", "with", "and", "or", "of", "to", "is", "that", "this", "about",
+    "people", "person", "accounts", "users", "community", "working",
+})
+
+
+def _extract_niche_terms(query: str) -> list[str]:
+    """Extract niche/specific terms from a query by filtering out generic words.
+
+    Returns terms that are likely project names, product names, or specific
+    technology identifiers — NOT roles or common adjectives.
+    """
+    words = query.lower().split()
+    niche = [w for w in words if w not in _GENERIC_QUERY_WORDS and len(w) > 2]
+    return niche
+
 app = FastAPI(title="Twitter Account Finder API")
 
 app.add_middleware(
@@ -179,6 +213,7 @@ def _serialize_account(ranked):
                 "like_count": t.like_count,
                 "retweet_count": t.retweet_count,
                 "reply_count": t.reply_count,
+                "media_urls": t.media_urls,
             }
             for t in acc.recent_tweets
         ],
@@ -307,6 +342,7 @@ async def search(request: Request):
 
             # Bio search tasks will be populated after plan_search completes
             bio_search_tasks: list[asyncio.Task] = []
+            shared_intent: dict = {}
 
             # --- Leg B: Full LLM pipeline (slow, ~15-30s) ---
             async def run_llm_pipeline() -> list:
@@ -316,6 +352,19 @@ async def search(request: Request):
                 # Step 1: Analyze intent + generate queries
                 await queue.put("Understanding your search...")
                 intent, queries = await llm.plan_search(query, None)
+
+                # Fallback: if LLM didn't extract mandatory_terms, derive from query
+                if not intent.mandatory_terms:
+                    niche = _extract_niche_terms(query)
+                    if niche:
+                        intent.mandatory_terms = niche
+                        print(f"[mandatory_terms] LLM returned [], fallback extracted: {niche}")
+                    else:
+                        print(f"[mandatory_terms] Broad query, no mandatory terms")
+                else:
+                    print(f"[mandatory_terms] LLM extracted: {intent.mandatory_terms}")
+
+                shared_intent["intent"] = intent
 
                 await queue.put(json.dumps({
                     "_event": "intent",
@@ -328,7 +377,17 @@ async def search(request: Request):
                 }))
 
                 # Launch bio keyword searches in parallel (Leg A extension)
-                for term in intent.bio_search_terms:
+                # Filter bio terms: only keep terms containing a mandatory term
+                bio_terms = intent.bio_search_terms
+                if intent.mandatory_terms:
+                    bio_terms = [
+                        t for t in bio_terms
+                        if any(mt.lower() in t.lower() for mt in intent.mandatory_terms)
+                    ]
+                    # Deduplicate preserving order
+                    seen = set()
+                    bio_terms = [t for t in bio_terms if not (t.lower() in seen or seen.add(t.lower()))]
+                for term in bio_terms:
                     task = asyncio.create_task(
                         score_user_search_results(twitter, term, user_network=user_network)
                     )
@@ -385,12 +444,6 @@ async def search(request: Request):
 
                 await queue.put(f"Narrowed to {len(filtered)} promising matches")
 
-                # Step 3b: Triage with Haiku (fast pre-filter for large sets)
-                if len(filtered) > 50:
-                    await queue.put(f"Quick-screening {len(filtered)} accounts...")
-                    filtered = await llm.triage_accounts(intent, filtered)
-                    await queue.put(f"{len(filtered)} accounts passed screening")
-
                 # Step 4: Rank with LLM
                 await queue.put(f"Ranking {len(filtered)} accounts by relevance...")
                 ranking = await llm.rank_accounts(intent, filtered, user_network=user_network)
@@ -401,31 +454,10 @@ async def search(request: Request):
 
             # --- Drain progress while tasks run ---
             all_done = False
-            partial_sent = False
             while not all_done:
                 all_tasks = [user_search_task, llm_pipeline_task] + bio_search_tasks
                 done_tasks = {t for t in all_tasks if t.done()}
                 all_done = len(done_tasks) == len(all_tasks)
-
-                # Stream partial results when user search finishes but LLM pipeline is still running
-                if not partial_sent and user_search_task.done() and not llm_pipeline_task.done():
-                    try:
-                        partial = user_search_task.result()
-                        if partial:
-                            from core.fast_path import merge_ranked_results as _merge
-                            partial_merged = _merge(partial, [])
-                            if partial_merged:
-                                yield {
-                                    "event": "partial_results",
-                                    "data": json.dumps({
-                                        "ranked": [_serialize_account(r) for r in partial_merged],
-                                        "quality": "moderate",
-                                        "refinement_questions": [],
-                                    }),
-                                }
-                    except Exception:
-                        pass
-                    partial_sent = True
 
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=0.5)
@@ -489,6 +521,11 @@ async def search(request: Request):
 
             # --- Merge results ---
             merged = merge_ranked_results(user_search_results, llm_results)
+
+            # For specific queries, drop good_match (deterministic safety net)
+            intent = shared_intent.get("intent")
+            if intent and intent.specificity >= 4:
+                merged = [r for r in merged if r.bucket in ("top_match", "strong_match")]
 
             if not merged:
                 yield {"event": "error", "data": json.dumps({"message": "No accounts found. Try broadening your search."})}

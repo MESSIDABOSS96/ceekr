@@ -1,3 +1,5 @@
+"use client";
+
 import type { Tweet } from "@/lib/types";
 
 function formatCount(count: number): string {
@@ -39,24 +41,36 @@ interface TweetCardProps {
 export function TweetCard({ tweet, handle }: TweetCardProps) {
   const url = `https://twitter.com/${handle}/status/${tweet.id}`;
   const relDate = formatRelativeDate(tweet.created_at);
+  const hasMedia = tweet.media_urls?.length > 0;
 
   return (
     <a
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className="flex w-[240px] shrink-0 flex-col justify-between rounded-xl border border-border-subtle bg-surface-tweet p-3.5 transition-colors hover:border-twitter/40"
+      onClick={(e) => e.stopPropagation()}
+      className="flex w-[230px] shrink-0 flex-col overflow-hidden rounded-xl border border-border-subtle bg-surface-tweet transition-colors hover:border-twitter/40"
     >
-      <p className="mb-2.5 line-clamp-4 text-[0.82rem] leading-[1.45] text-text-body">
-        {truncate(tweet.text)}
-      </p>
-      <div className="flex items-center gap-3.5 text-[0.73rem] text-text-muted">
-        <span>{"\u2665"} {formatCount(tweet.like_count)}</span>
-        <span>{"\uD83D\uDD01"} {formatCount(tweet.retweet_count)}</span>
-        <span>{"\uD83D\uDCAC"} {formatCount(tweet.reply_count)}</span>
-        {relDate && (
-          <span className="ml-auto text-text-muted/70">{relDate}</span>
-        )}
+      {hasMedia && (
+        <img
+          src={tweet.media_urls[0]}
+          alt=""
+          className="h-[120px] w-full object-cover"
+        />
+      )}
+      <div className="flex flex-1 flex-col justify-between p-3.5">
+        <p
+          className={`mb-2.5 text-[0.82rem] leading-[1.45] text-text-body ${hasMedia ? "line-clamp-2" : "line-clamp-4"}`}
+        >
+          {truncate(tweet.text)}
+        </p>
+        <div className="flex items-center gap-3.5 text-[0.73rem] text-text-muted">
+          <span>{"\u2665"} {formatCount(tweet.like_count)}</span>
+          <span>{"\uD83D\uDD01"} {formatCount(tweet.retweet_count)}</span>
+          {relDate && (
+            <span className="ml-auto text-text-muted/70">{relDate}</span>
+          )}
+        </div>
       </div>
     </a>
   );

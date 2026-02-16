@@ -8,12 +8,15 @@ RANKING_PROMPT = """You are an expert at evaluating whether Twitter accounts are
 Looking for: {persona}
 Who discuss: {topic}
 Purpose: {goal}
+Search specificity: {specificity}/5
 
 ## Key Signals (things that CONFIRM this is the right person)
 {key_signals}
 
 ## Anti-Signals (things that DISQUALIFY)
 {anti_signals}
+
+{mandatory_terms_section}
 
 ## Bucket Tiers
 
@@ -26,7 +29,7 @@ The ideal result. This person IS the persona described, ACTIVELY discusses the e
 Right persona and discusses related topics. May be slightly less recent (1-3 months) or slightly adjacent to the exact topic requested. Someone the user would want to connect with.
 
 ### good_match
-Right general area but weaker evidence. Topic discussion may be older (3-6 months), or right topic but different persona, or limited tweet evidence. Still worth showing.
+Correct persona with weaker evidence. The account IS plausibly the type of person described, but evidence is older (3-6 months) or less direct. Must still be the right persona — wrong persona with topical overlap is exclude, not good_match.
 
 ### exclude
 Irrelevant, spam, stale (>6 months without relevant activity), or anti-signals match. Do NOT show to the user.
@@ -34,6 +37,13 @@ Irrelevant, spam, stale (>6 months without relevant activity), or anti-signals m
 ## Evaluation Criteria
 
 For each account, evaluate:
+
+**0. Persona Gate** (HARD FILTER — evaluate first)
+- Does this account match the described persona? Not adjacent, not related — the actual persona.
+- Example: If looking for "YC founders", an indie hacker who ships side projects is NOT a YC founder → exclude.
+- Example: If looking for "ML engineers", a data journalist who writes about AI is NOT an ML engineer → exclude.
+- If the persona doesn't match, the account is ALWAYS exclude. No amount of topical overlap overrides this.
+- For high-specificity searches (4-5), be strict. For low-specificity (1-2), be more lenient on persona interpretation.
 
 **1. Topic Relevance** (most important)
 - Are they actively discussing the topic? Not just mentioning a keyword once.
@@ -62,14 +72,18 @@ For EACH account provide:
 
 **bucket**: One of: top_match, strong_match, good_match, exclude
 
-**summary**: User-facing explanation. Tailor verbosity to bucket:
-- top_match / strong_match: 2-3 sentences with SPECIFIC evidence. Reference tweets, bio, engagement. Mention recency.
-  GOOD: "ML engineer at Google who 3 days ago shared results from fine-tuning Llama 3. Their tweets show deep technical knowledge with posts about LoRA training getting 200+ likes."
-- good_match: 1 sentence explaining the connection.
-  GOOD: "Discusses AI topics occasionally, bio mentions working in ML."
+**summary**: Write like you're introducing someone at a party — who they are AND why they matter for this search. Be natural and conversational, not robotic.
+- top_match / strong_match: 2-3 concise sentences. First: who they are. Second: why they're relevant to this search.
+  GOOD: "Sarah builds payment infrastructure at Stripe and writes detailed threads on distributed systems. Her recent post on idempotency patterns sparked a great discussion."
+  BAD: "Relevant for: payments infrastructure. Evidence: tweets about distributed systems."
+- good_match: 1 natural sentence.
+  GOOD: "Data engineer at Shopify who occasionally shares thoughts on ETL pipeline design."
 - exclude: Leave empty string.
 
-**highlight_tweet_indices**: Indices (0-based) of the most relevant tweets from their recent_tweets array. Up to 3 for top/strong, 1 for good, empty for exclude.
+**highlight_tweet_indices**: Indices (0-based) of the best tweets from their recent_tweets array.
+- For topic-specific searches (specificity >= 3): Choose tweets demonstrating direct engagement with the SPECIFIC topic. Prioritize topical relevance over raw engagement.
+- For broad/general searches (specificity 1-2): Choose the most engaging or representative recent tweets.
+- Count: 2-3 for top_match/strong_match, 1-2 for good_match, empty for exclude.
 
 Return accounts with top_match first, then strong_match, then good_match, then exclude.
 
@@ -83,11 +97,25 @@ def format_ranking_prompt(intent: SearchIntent, accounts_json: str) -> str:
     key_signals = "\n".join(f"- {s}" for s in intent.key_signals) if intent.key_signals else "- (none specified)"
     anti_signals = "\n".join(f"- {s}" for s in intent.anti_signals) if intent.anti_signals else "- (none specified)"
 
+    if intent.mandatory_terms:
+        terms_str = ", ".join(f'"{t}"' for t in intent.mandatory_terms)
+        mandatory_terms_section = f"""## Key Relevance Terms
+
+Key terms for this search: {terms_str}
+
+Accounts that mention these terms in their bio, tweets, or handle are significantly more likely to be relevant — weight this heavily. Accounts without any mention can still qualify as good_match if they show clear topical connection through their content, but absence of these terms is a strong signal against relevance."""
+    else:
+        mandatory_terms_section = """## Search Scope
+
+Broad category search — match on overall relevance. No mandatory term filtering required."""
+
     return RANKING_PROMPT.format(
         persona=intent.persona,
         topic=intent.topic,
         goal=intent.goal,
+        specificity=intent.specificity,
         key_signals=key_signals,
         anti_signals=anti_signals,
+        mandatory_terms_section=mandatory_terms_section,
         accounts_json=accounts_json,
     )

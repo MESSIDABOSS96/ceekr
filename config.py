@@ -32,8 +32,8 @@ def is_oauth_configured() -> bool:
 
 
 # Search settings
-MIN_QUERIES = 8  # Number of search queries to generate (fixed)
-MAX_QUERIES = 8  # Number of search queries to generate (fixed)
+MIN_QUERIES = 5  # Number of search queries to generate (fixed)
+MAX_QUERIES = 5  # Number of search queries to generate (fixed)
 TWEETS_PER_QUERY = 50  # Number of tweets to fetch per query
 
 # Pre-filter thresholds
@@ -43,14 +43,14 @@ BOT_KEYWORDS = ["bot", "auto", "giveaway", "airdrop", "free followers", "follow 
 # Ranking
 RANKING_BATCH_SIZE = 40
 MAX_TWEETS_FOR_RANKING = 3  # tweets sent to LLM per account
-MAX_TWEET_LENGTH = 250  # chars per tweet
-MAX_BIO_LENGTH = 200  # chars for bio
+MAX_TWEET_LENGTH = 150  # chars per tweet
+MAX_BIO_LENGTH = 150  # chars for bio
 
 # Fast path
 FAST_PATH_MAX_RESULTS = 75
 
 # Fallback queries
-MIN_ACCOUNTS_BEFORE_FALLBACK = 30
+MIN_ACCOUNTS_BEFORE_FALLBACK = 15
 
 # Recency scoring
 RECENCY_HALF_LIFE_DAYS = 90        # engagement value halves every N days

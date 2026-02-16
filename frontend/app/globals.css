@@ -48,6 +48,7 @@
   --color-surface: oklch(0.16 0 0);
   --color-surface-card: oklch(0.18 0 0);
   --color-surface-search: oklch(0.19 0 0);
+  --color-surface-overlay: oklch(0.14 0 0);
   --color-surface-tweet: oklch(0.15 0 0);
   --color-glow: oklch(0.7 0.02 240);
   --color-glow-focus: oklch(0.75 0.04 240);

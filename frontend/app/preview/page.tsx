@@ -1,0 +1,239 @@
+import { ResultCard } from "@/components/result-card";
+import type { RankedAccount } from "@/lib/types";
+
+const MOCK_ACCOUNTS: RankedAccount[] = [
+  {
+    user_id: "1",
+    handle: "elaboratedev",
+    name: "Sarah Chen",
+    bio: "Staff Engineer @stripe. Building payment infra. Previously @google. Opinions on distributed systems, Rust, and making software that doesn't break at 3am.",
+    followers_count: 487_200,
+    following_count: 1_230,
+    tweet_count: 12_400,
+    profile_url: "https://x.com/elaboratedev",
+    profile_image_url:
+      "https://pbs.twimg.com/profile_images/1683325380441128960/yRsRRjGO_normal.jpg",
+    recent_tweets: [
+      {
+        id: "t1",
+        text: "Hot take: most microservices architectures would be better as a well-structured monolith. The overhead of service boundaries rarely pays off until you have 50+ engineers.",
+        created_at: "2026-02-10T14:30:00Z",
+        like_count: 2340,
+        retweet_count: 412,
+        reply_count: 187,
+        media_urls: ["https://pbs.twimg.com/media/example_architecture_diagram.jpg"],
+      },
+      {
+        id: "t2",
+        text: "Just shipped our new idempotency layer. 3 months of work, zero duplicate payments in production. This is what I live for.",
+        created_at: "2026-02-08T09:15:00Z",
+        like_count: 890,
+        retweet_count: 67,
+        reply_count: 43,
+        media_urls: [],
+      },
+    ],
+    matched_queries: ["payments infrastructure engineer"],
+    location: "San Francisco, CA",
+    verified: true,
+    created_at: "2019-03-15T00:00:00Z",
+    network: { you_follow: false, follows_you: false, mutual_followers: [] },
+    why_relevant:
+      "Senior payments infrastructure engineer at Stripe with deep expertise in distributed systems.",
+    bucket: "top_match",
+    summary:
+      "Sarah builds payment infrastructure at Stripe and writes detailed threads on distributed systems. Her recent post on idempotency patterns sparked a great discussion among fintech engineers.",
+    highlight_tweet_indices: [0, 1],
+    suggested_approach: null,
+    evidence_highlights: [],
+    confidence: "high",
+    enrichment: null,
+  },
+  {
+    user_id: "2",
+    handle: "mkfoundersclub",
+    name: "Marcus Kim",
+    bio: "Building in public. YC W24. Prev: ML eng @meta. Tweeting about startups, fundraising, and the grind.",
+    followers_count: 15_300,
+    following_count: 890,
+    tweet_count: 4_200,
+    profile_url: "https://x.com/mkfoundersclub",
+    profile_image_url:
+      "https://pbs.twimg.com/profile_images/1780612311608344576/sHxr0NHR_normal.jpg",
+    recent_tweets: [
+      {
+        id: "t3",
+        text: "Month 6 update: $42K MRR, 3 enterprise pilots, and we just hired engineer #4. The fundraising advice everyone gives is wrong — just build something people want and the money follows.",
+        created_at: "2026-02-12T16:00:00Z",
+        like_count: 340,
+        retweet_count: 52,
+        reply_count: 28,
+        media_urls: ["https://pbs.twimg.com/media/example_mrr_chart.jpg"],
+      },
+    ],
+    matched_queries: ["YC founders building in public"],
+    location: null,
+    verified: false,
+    created_at: "2021-07-20T00:00:00Z",
+    network: { you_follow: false, follows_you: false, mutual_followers: [] },
+    why_relevant:
+      "YC-backed founder sharing transparent startup journey with real metrics.",
+    bucket: "strong_match",
+    summary:
+      "Marcus is a YC W24 founder sharing honest build-in-public updates with real revenue numbers. Former ML engineer at Meta who brings a data-driven approach to startup growth.",
+    highlight_tweet_indices: [0],
+    suggested_approach: null,
+    evidence_highlights: [],
+    confidence: "high",
+    enrichment: null,
+  },
+  {
+    user_id: "3",
+    handle: "dataclara",
+    name: "Clara Mendez",
+    bio: "Data scientist turned indie maker. Building tools for small teams. Newsletter: dataclaraweekly.com",
+    followers_count: 823,
+    following_count: 445,
+    tweet_count: 1_870,
+    profile_url: "https://x.com/dataclara",
+    profile_image_url:
+      "https://pbs.twimg.com/profile_images/1750000000000000000/placeholder_normal.jpg",
+    recent_tweets: [
+      {
+        id: "t4",
+        text: "Launched my analytics dashboard template today. Built with Next.js + Tremor. Free for solo founders. Link in bio.",
+        created_at: "2026-02-14T11:00:00Z",
+        like_count: 89,
+        retweet_count: 23,
+        reply_count: 12,
+        media_urls: [],
+      },
+    ],
+    matched_queries: ["indie maker data tools"],
+    location: "Austin, TX",
+    verified: false,
+    created_at: "2022-01-10T00:00:00Z",
+    network: { you_follow: false, follows_you: false, mutual_followers: [] },
+    why_relevant:
+      "Indie maker building data tools for small teams with a growing newsletter.",
+    bucket: "good_match",
+    summary:
+      "Data scientist turned indie maker who ships practical analytics tools for small teams and runs a weekly newsletter.",
+    highlight_tweet_indices: [0],
+    suggested_approach: null,
+    evidence_highlights: [],
+    confidence: "medium",
+    enrichment: {
+      external_link: "https://dataclaraweekly.com",
+      link_label: "Newsletter",
+      context_note: null,
+    },
+  },
+  {
+    user_id: "4",
+    handle: "alexrothenberg_longhandle",
+    name: "Dr. Alexander von Rothenberg-Steinmetz III",
+    bio: "Distinguished Professor of Computational Neuroscience & Artificial Intelligence at MIT CSAIL. Director, Neural Computation Lab. Author of 'Minds and Machines' (Oxford University Press, 2024). Research: brain-computer interfaces, neuromorphic computing, spiking neural networks. Previously: Max Planck Institute, ETH Zürich, DeepMind.",
+    followers_count: 92_100,
+    following_count: 312,
+    tweet_count: 3_450,
+    profile_url: "https://x.com/alexrothenberg_longhandle",
+    profile_image_url:
+      "https://pbs.twimg.com/profile_images/1700000000000000000/academic_normal.jpg",
+    recent_tweets: [
+      {
+        id: "t5",
+        text: "Our new paper on cortical microcircuit simulation just dropped in Nature Neuroscience. We show that a 4-layer spiking network can reproduce orientation selectivity with 10x fewer parameters than previous models. This changes how we think about biological computation. Thread",
+        created_at: "2026-02-13T08:00:00Z",
+        like_count: 4200,
+        retweet_count: 890,
+        reply_count: 156,
+        media_urls: ["https://pbs.twimg.com/media/example_paper_figure.jpg"],
+      },
+      {
+        id: "t6",
+        text: "Excited to announce our lab received a $12M grant from DARPA for next-gen brain-computer interfaces. We'll be hiring 6 postdocs and 4 PhD students. DMs open if you're interested in pushing the boundaries of neural engineering.",
+        created_at: "2026-02-11T15:00:00Z",
+        like_count: 1890,
+        retweet_count: 445,
+        reply_count: 234,
+        media_urls: [],
+      },
+    ],
+    matched_queries: ["neuroscience AI researcher", "brain-computer interface"],
+    location: "Cambridge, MA",
+    verified: true,
+    created_at: "2018-06-01T00:00:00Z",
+    network: { you_follow: false, follows_you: false, mutual_followers: [] },
+    why_relevant:
+      "Leading researcher at MIT bridging neuroscience and AI with groundbreaking work on brain-computer interfaces.",
+    bucket: "top_match",
+    summary:
+      "Alex runs the Neural Computation Lab at MIT and just published a breakthrough paper in Nature Neuroscience on spiking networks. He's actively hiring and regularly shares deep technical insights on brain-computer interfaces.",
+    highlight_tweet_indices: [0, 1],
+    suggested_approach: null,
+    evidence_highlights: [],
+    confidence: "high",
+    enrichment: null,
+  },
+  {
+    user_id: "5",
+    handle: "ghostwriter99",
+    name: "Anonymous Builder",
+    bio: null,
+    followers_count: 2_340,
+    following_count: 178,
+    tweet_count: 890,
+    profile_url: "https://x.com/ghostwriter99",
+    profile_image_url: null,
+    recent_tweets: [
+      {
+        id: "t7",
+        text: "Shipped a feature today that will save our users 2 hours per week. No announcement, no blog post. Just quietly making things better.",
+        created_at: "2026-02-14T20:00:00Z",
+        like_count: 45,
+        retweet_count: 8,
+        reply_count: 3,
+        media_urls: [],
+      },
+    ],
+    matched_queries: ["quiet builders shipping features"],
+    location: null,
+    verified: false,
+    created_at: "2023-09-01T00:00:00Z",
+    network: { you_follow: false, follows_you: false, mutual_followers: [] },
+    why_relevant:
+      "Anonymous builder focused on shipping impactful features without fanfare.",
+    bucket: "strong_match",
+    summary:
+      "Anonymous account that consistently ships meaningful product improvements. Low-key presence but high signal tweets about building useful software.",
+    highlight_tweet_indices: [0],
+    suggested_approach: null,
+    evidence_highlights: [],
+    confidence: "medium",
+    enrichment: null,
+  },
+];
+
+export default function PreviewPage() {
+  return (
+    <div className="min-h-screen bg-background pb-16">
+      <div className="mx-auto max-w-2xl px-4">
+        <div className="flex flex-col items-center pt-10 pb-8">
+          <h1 className="font-mono-display text-2xl font-bold text-text-primary">
+            Card Preview
+          </h1>
+          <p className="mt-2 text-sm text-text-muted">
+            5 mock accounts — design iteration page
+          </p>
+        </div>
+
+        <div className="space-y-4">
+          {MOCK_ACCOUNTS.map((account) => (
+            <ResultCard key={account.user_id} account={account} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}

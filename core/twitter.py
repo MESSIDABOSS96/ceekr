@@ -48,6 +48,22 @@ def _tweet_recency_score(tweet: Tweet) -> float:
     return engagement * decay + bonus
 
 
+def _extract_media_urls(tweet_obj: dict) -> list[str]:
+    """Extract media URLs from a tweet object, preferring extended_entities."""
+    urls: list[str] = []
+    # Prefer extended_entities (has all media), fall back to entities
+    media_list = (
+        tweet_obj.get("extended_entities", {}).get("media")
+        or tweet_obj.get("entities", {}).get("media")
+        or []
+    )
+    for m in media_list:
+        url = m.get("media_url_https") or m.get("media_url")
+        if url:
+            urls.append(url)
+    return urls
+
+
 class TwitterClient:
     """Wrapper around SocialData.tools API for Twitter data access."""
 
@@ -120,6 +136,7 @@ class TwitterClient:
                         "like_count": tweet_obj.get("favorite_count", 0),
                         "retweet_count": tweet_obj.get("retweet_count", 0),
                         "reply_count": tweet_obj.get("reply_count", 0),
+                        "media_urls": _extract_media_urls(tweet_obj),
                     },
                     "user": {
                         "user_id": user.get("id_str", ""),
@@ -176,6 +193,7 @@ class TwitterClient:
                     "like_count": tweet_obj.get("favorite_count", 0),
                     "retweet_count": tweet_obj.get("retweet_count", 0),
                     "reply_count": tweet_obj.get("reply_count", 0),
+                    "media_urls": _extract_media_urls(tweet_obj),
                 })
 
             return tweets[:count]
@@ -336,6 +354,7 @@ class SearchOrchestrator:
                     like_count=tweet_data.get("like_count", 0),
                     retweet_count=tweet_data.get("retweet_count", 0),
                     reply_count=tweet_data.get("reply_count", 0),
+                    media_urls=tweet_data.get("media_urls", []),
                 )
                 tweets_by_user[user_id].append(tweet)
 
@@ -468,6 +487,7 @@ class SearchOrchestrator:
                             like_count=t_data.get("like_count", 0),
                             retweet_count=t_data.get("retweet_count", 0),
                             reply_count=t_data.get("reply_count", 0),
+                            media_urls=t_data.get("media_urls", []),
                         ))
                         existing_ids.add(t_id)
 

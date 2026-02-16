@@ -90,9 +90,14 @@ class LLMClient:
                             "description": "3-4 short keyword phrases for bio/profile searches (1-3 words each)",
                             "items": {"type": "string"},
                         },
+                        "mandatory_terms": {
+                            "type": "array",
+                            "description": "0-3 niche-specific terms that MUST appear in results. Empty for broad queries.",
+                            "items": {"type": "string"},
+                        },
                         "queries": {
                             "type": "array",
-                            "description": "8 Twitter search queries from different angles",
+                            "description": "5 Twitter search queries from different angles",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -121,6 +126,7 @@ class LLMClient:
                         "key_signals",
                         "anti_signals",
                         "bio_search_terms",
+                        "mandatory_terms",
                         "queries",
                     ],
                 },
@@ -130,7 +136,7 @@ class LLMClient:
         prompt = format_search_plan_prompt(who, why)
 
         response = await self.client.messages.create(
-            model=self.model,
+            model=self.fast_model,
             max_tokens=2048,
             tools=tools,
             tool_choice={"type": "tool", "name": "search_plan"},
@@ -146,10 +152,11 @@ class LLMClient:
                     topic=result.get("topic", ""),
                     goal=result.get("goal", ""),
                     specificity=result.get("specificity", 3),
-                    suggested_query_count=8,
+                    suggested_query_count=5,
                     bio_search_terms=result.get("bio_search_terms", []),
                     key_signals=result.get("key_signals", []),
                     anti_signals=result.get("anti_signals", []),
+                    mandatory_terms=result.get("mandatory_terms", []),
                 )
 
                 queries = [
@@ -212,7 +219,7 @@ class LLMClient:
         prompt = format_fallback_prompt(intent, original_queries, accounts_found)
 
         response = await self.client.messages.create(
-            model=self.model,
+            model=self.fast_model,
             max_tokens=1024,
             tools=tools,
             tool_choice={"type": "tool", "name": "fallback_queries"},
@@ -432,7 +439,7 @@ class LLMClient:
         prompt = format_ranking_prompt(intent, accounts_json)
 
         response = await self.client.messages.create(
-            model=self.model,
+            model=self.fast_model,
             max_tokens=8192,
             tools=tools,
             tool_choice={"type": "tool", "name": "rank_accounts"},

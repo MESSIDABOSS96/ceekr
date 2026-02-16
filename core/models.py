@@ -65,6 +65,10 @@ class SearchIntent(BaseModel):
         default_factory=list,
         description="2-3 disqualifiers that indicate NOT the right person",
     )
+    mandatory_terms: list[str] = Field(
+        default_factory=list,
+        description="0-3 niche-specific terms that MUST appear in results. Empty for broad queries.",
+    )
 
 
 class SearchQuery(BaseModel):
@@ -92,6 +96,7 @@ class Tweet(BaseModel):
     like_count: int = Field(0, description="Number of likes")
     retweet_count: int = Field(0, description="Number of retweets")
     reply_count: int = Field(0, description="Number of replies")
+    media_urls: list[str] = Field(default_factory=list, description="Media URLs (photos/video thumbnails)")
 
 
 class NetworkInfo(BaseModel):
