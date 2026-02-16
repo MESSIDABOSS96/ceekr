@@ -117,13 +117,13 @@ function reducer(state: State, action: Action): State {
 function getSearchProgress(state: State): number {
   if (state.phase === "results") return 100;
   const msg = state.progressMessages[state.progressMessages.length - 1] ?? "";
-  if (msg.startsWith("Ranking")) return 85;
-  if (msg.startsWith("Narrowed")) return 75;
-  if (msg.startsWith("Sifting")) return 70;
-  if (msg.startsWith("broadening") || msg.toLowerCase().includes("broadening")) return 55;
-  if (msg.startsWith("Searching")) return 50;
+  if (msg.startsWith("Picking")) return 85;
+  if (msg.startsWith("Getting warmer")) return 75;
+  if (msg.startsWith("Separating")) return 70;
+  if (msg.includes("wider net")) return 55;
+  if (msg.startsWith("Pulling") || msg.startsWith("The plot")) return 50;
   if (state.queries.length > 0) return 30;
-  if (msg.startsWith("Understanding")) return 15;
+  if (msg.startsWith("Reading your mind")) return 15;
   if (state.progressMessages.length > 0) return 5;
   return 0;
 }

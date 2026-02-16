@@ -20,6 +20,9 @@ ANTHROPIC_FAST_MODEL = os.getenv("ANTHROPIC_FAST_MODEL", "claude-haiku-4-5-20251
 # SocialData settings
 SOCIALDATA_API_KEY = os.getenv("SOCIALDATA_API_KEY")
 
+# Algorithm version: "v1" (default) or "v2" (seed & expand)
+ALGORITHM_VERSION = os.getenv("ALGORITHM", "v1")
+
 # Twitter OAuth 2.0 settings (optional — enables network matching)
 TWITTER_CLIENT_ID = os.getenv("TWITTER_CLIENT_ID")
 TWITTER_CLIENT_SECRET = os.getenv("TWITTER_CLIENT_SECRET")

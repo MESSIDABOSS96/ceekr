@@ -239,6 +239,82 @@ class TwitterClient:
             print(f"Error searching users for '{query}': {e}")
             return []
 
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=5))
+    async def fetch_similar_profiles(self, user_id: str) -> list[dict]:
+        """Fetch profiles similar to a given user via SocialData API."""
+        await self._ensure_initialized()
+        try:
+            response = await self._http_client.get(
+                f"{self.base_url}/twitter/user/{user_id}/similar-profiles",
+            )
+            response.raise_for_status()
+            data = response.json()
+            users = data if isinstance(data, list) else data.get("users", data.get("similar_profiles", []))
+            return users
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error fetching similar profiles for {user_id}: {e.response.status_code}")
+            return []
+        except Exception as e:
+            print(f"Error fetching similar profiles for {user_id}: {e}")
+            return []
+
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=5))
+    async def fetch_user_lists(self, user_id: str) -> list[dict]:
+        """Fetch lists that a user is a member of via SocialData API."""
+        await self._ensure_initialized()
+        try:
+            response = await self._http_client.get(
+                f"{self.base_url}/twitter/user/{user_id}/lists",
+            )
+            response.raise_for_status()
+            data = response.json()
+            lists = data if isinstance(data, list) else data.get("lists", [])
+            return lists
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error fetching lists for {user_id}: {e.response.status_code}")
+            return []
+        except Exception as e:
+            print(f"Error fetching lists for {user_id}: {e}")
+            return []
+
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=5))
+    async def fetch_list_members(self, list_id: str, max_results: int = 100) -> list[dict]:
+        """Fetch members of a Twitter list via SocialData API."""
+        await self._ensure_initialized()
+        try:
+            response = await self._http_client.get(
+                f"{self.base_url}/twitter/list/{list_id}/members",
+            )
+            response.raise_for_status()
+            data = response.json()
+            members = data if isinstance(data, list) else data.get("members", data.get("users", []))
+            return members[:max_results]
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error fetching list members for {list_id}: {e.response.status_code}")
+            return []
+        except Exception as e:
+            print(f"Error fetching list members for {list_id}: {e}")
+            return []
+
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=5))
+    async def fetch_verified_followers(self, user_id: str, max_results: int = 50) -> list[dict]:
+        """Fetch verified followers of a user via SocialData API."""
+        await self._ensure_initialized()
+        try:
+            response = await self._http_client.get(
+                f"{self.base_url}/twitter/user/{user_id}/verified-followers",
+            )
+            response.raise_for_status()
+            data = response.json()
+            users = data if isinstance(data, list) else data.get("users", data.get("followers", []))
+            return users[:max_results]
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error fetching verified followers for {user_id}: {e.response.status_code}")
+            return []
+        except Exception as e:
+            print(f"Error fetching verified followers for {user_id}: {e}")
+            return []
+
     async def fetch_follow_list(
         self, user_id: str, list_type: str = "following", max_count: int = 1000,
     ) -> set[str]:

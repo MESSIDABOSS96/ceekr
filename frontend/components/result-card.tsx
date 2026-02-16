@@ -25,14 +25,14 @@ export function ResultCard({ account: r }: ResultCardProps) {
     .slice(0, 3);
 
   return (
-    <div className="group rounded-2xl border border-border-subtle bg-surface-card p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-white/12 hover:shadow-[0_8px_24px_rgba(0,0,0,0.3)]">
+    <a
+      href={r.profile_url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group block rounded-2xl border border-border-subtle bg-surface-card p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-white/12 hover:shadow-[0_8px_24px_rgba(0,0,0,0.3)] focus-visible:outline-2 focus-visible:outline-twitter"
+    >
       {/* Header row: avatar + info */}
-      <a
-        href={r.profile_url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex items-start gap-3 focus-visible:outline-2 focus-visible:outline-twitter"
-      >
+      <div className="flex items-start gap-3">
         {pfpUrl ? (
           <img
             src={pfpUrl}
@@ -67,7 +67,7 @@ export function ResultCard({ account: r }: ResultCardProps) {
             )}
           </div>
         </div>
-      </a>
+      </div>
 
       {/* Summary as primary text */}
       {(r.summary || r.why_relevant) && (
@@ -78,12 +78,19 @@ export function ResultCard({ account: r }: ResultCardProps) {
 
       {/* Highlighted tweets as horizontal card row */}
       {highlightedTweets && highlightedTweets.length > 0 && (
-        <div className="mt-4 flex gap-2.5 overflow-x-auto">
+        <div className="mt-4 flex gap-3 overflow-x-auto scrollbar-on-hover">
           {highlightedTweets.map((tweet) => (
-            <TweetCard key={tweet.id} tweet={tweet} handle={r.handle} />
+            <TweetCard
+              key={tweet.id}
+              tweet={tweet}
+              handle={r.handle}
+              displayName={r.name}
+              profileImageUrl={r.profile_image_url}
+              verified={r.verified}
+            />
           ))}
         </div>
       )}
-    </div>
+    </a>
   );
 }

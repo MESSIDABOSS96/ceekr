@@ -9,8 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from sse_starlette.sse import EventSourceResponse
 
+from algorithms import get_algorithm
 from config import (
-    MIN_ACCOUNTS_BEFORE_FALLBACK,
     TWITTER_CLIENT_ID,
     TWITTER_CLIENT_SECRET,
     TWITTER_REDIRECT_URI,
@@ -25,51 +25,10 @@ from core.auth import (
     fetch_twitter_user,
     get_session,
 )
-from core.fast_path import (
-    QueryType,
-    classify_query,
-    execute_handle_lookup,
-    light_filter,
-    merge_ranked_results,
-    score_accounts_fast,
-    score_user_search_results,
-)
+from core.fast_path import QueryType, classify_query, execute_handle_lookup
 from core.llm import LLMClient
-from core.twitter import SearchOrchestrator, TwitterClient
+from core.twitter import TwitterClient
 
-
-# Generic words that should NOT be treated as mandatory niche terms.
-# If a query word isn't in this set (and is long enough), it's likely a niche specifier.
-_GENERIC_QUERY_WORDS = frozenset({
-    # Adjectives / qualifiers
-    "top", "best", "popular", "famous", "leading", "prominent", "notable",
-    "biggest", "largest", "major", "great", "good", "new", "recent", "active",
-    # Roles / personas
-    "researcher", "researchers", "developer", "developers", "engineer", "engineers",
-    "founder", "founders", "creator", "creators", "builder", "builders",
-    "contributor", "contributors", "maintainer", "maintainers",
-    "scientist", "scientists", "expert", "experts", "professional", "professionals",
-    "designer", "designers", "writer", "writers", "author", "authors",
-    "analyst", "analysts", "consultant", "consultants", "advocate", "advocates",
-    "influencer", "influencers", "leader", "leaders", "speaker", "speakers",
-    "educator", "educators", "teacher", "teachers", "professor", "professors",
-    "investor", "investors", "advisor", "advisors",
-    # Common filler / stop words
-    "find", "search", "looking", "who", "are", "the", "a", "an", "in", "on",
-    "for", "with", "and", "or", "of", "to", "is", "that", "this", "about",
-    "people", "person", "accounts", "users", "community", "working",
-})
-
-
-def _extract_niche_terms(query: str) -> list[str]:
-    """Extract niche/specific terms from a query by filtering out generic words.
-
-    Returns terms that are likely project names, product names, or specific
-    technology identifiers — NOT roles or common adjectives.
-    """
-    words = query.lower().split()
-    niche = [w for w in words if w not in _GENERIC_QUERY_WORDS and len(w) > 2]
-    return niche
 
 app = FastAPI(title="Twitter Account Finder API")
 
@@ -327,141 +286,20 @@ async def search(request: Request):
                 }
                 return
 
-            # ── Everything else: user search + LLM pipeline in parallel ──
-            yield {"event": "progress", "data": json.dumps({"message": "Scanning Twitter..."})}
-
+            # ── Everything else: run selected algorithm ──
             twitter = TwitterClient()
             await twitter.initialize()
-            llm = LLMClient()
             queue: asyncio.Queue = asyncio.Queue()
 
-            # --- Leg A: User search API (fast, ~1-2s) ---
-            user_search_task = asyncio.create_task(
-                score_user_search_results(twitter, query, user_network=user_network)
+            algorithm = get_algorithm()
+            algorithm_task = asyncio.create_task(
+                algorithm.run(query, twitter, queue, user_network)
             )
 
-            # Bio search tasks will be populated after plan_search completes
-            bio_search_tasks: list[asyncio.Task] = []
-            shared_intent: dict = {}
-
-            # --- Leg B: Full LLM pipeline (slow, ~15-30s) ---
-            async def run_llm_pipeline() -> list:
-                """Run the full LLM pipeline: intent → queries → tweet search → rank."""
-                from core.fast_path import light_filter
-
-                # Step 1: Analyze intent + generate queries
-                await queue.put("Understanding your search...")
-                intent, queries = await llm.plan_search(query, None)
-
-                # Fallback: if LLM didn't extract mandatory_terms, derive from query
-                if not intent.mandatory_terms:
-                    niche = _extract_niche_terms(query)
-                    if niche:
-                        intent.mandatory_terms = niche
-                        print(f"[mandatory_terms] LLM returned [], fallback extracted: {niche}")
-                    else:
-                        print(f"[mandatory_terms] Broad query, no mandatory terms")
-                else:
-                    print(f"[mandatory_terms] LLM extracted: {intent.mandatory_terms}")
-
-                shared_intent["intent"] = intent
-
-                await queue.put(json.dumps({
-                    "_event": "intent",
-                    "persona": intent.persona,
-                    "topic": intent.topic,
-                    "goal": intent.goal,
-                    "specificity": intent.specificity,
-                    "key_signals": intent.key_signals,
-                    "anti_signals": intent.anti_signals,
-                }))
-
-                # Launch bio keyword searches in parallel (Leg A extension)
-                # Filter bio terms: only keep terms containing a mandatory term
-                bio_terms = intent.bio_search_terms
-                if intent.mandatory_terms:
-                    bio_terms = [
-                        t for t in bio_terms
-                        if any(mt.lower() in t.lower() for mt in intent.mandatory_terms)
-                    ]
-                    # Deduplicate preserving order
-                    seen = set()
-                    bio_terms = [t for t in bio_terms if not (t.lower() in seen or seen.add(t.lower()))]
-                for term in bio_terms:
-                    task = asyncio.create_task(
-                        score_user_search_results(twitter, term, user_network=user_network)
-                    )
-                    bio_search_tasks.append(task)
-
-                if not queries:
-                    return []
-
-                await queue.put(json.dumps({
-                    "_event": "queries",
-                    "queries": [
-                        {"query": q.query, "rationale": q.rationale, "angle": q.angle}
-                        for q in queries
-                    ],
-                }))
-
-                # Step 2: Execute tweet searches
-                orchestrator = SearchOrchestrator(twitter)
-
-                async def search_status(msg: str):
-                    await queue.put(msg)
-
-                query_strings = [q.query for q in queries]
-                accounts = await orchestrator.execute_searches(
-                    query_strings, search_status, user_network=user_network,
-                )
-
-                # Step 2b: Fallback queries if too few accounts
-                if len(accounts) < MIN_ACCOUNTS_BEFORE_FALLBACK:
-                    await queue.put(f"Only {len(accounts)} accounts found, broadening search...")
-                    fallback_queries = await llm.generate_fallback_queries(
-                        intent, query_strings, len(accounts),
-                    )
-                    if fallback_queries:
-                        fallback_strings = [q.query for q in fallback_queries]
-                        fallback_accounts = await orchestrator.execute_searches(
-                            fallback_strings, search_status, user_network=user_network,
-                        )
-                        # Merge: add new accounts not already seen
-                        existing_ids = {a.user_id for a in accounts}
-                        for acc in fallback_accounts:
-                            if acc.user_id not in existing_ids:
-                                accounts.append(acc)
-                                existing_ids.add(acc.user_id)
-
-                if not accounts:
-                    return []
-
-                # Step 3: Pre-filter
-                await queue.put(f"Sifting through {len(accounts)} accounts...")
-                filtered, removed = SearchOrchestrator.pre_filter_accounts(accounts, intent)
-                if not filtered:
-                    return []
-
-                await queue.put(f"Narrowed to {len(filtered)} promising matches")
-
-                # Step 4: Rank with LLM
-                await queue.put(f"Ranking {len(filtered)} accounts by relevance...")
-                ranking = await llm.rank_accounts(intent, filtered, user_network=user_network)
-
-                return ranking.ranked_accounts if ranking.ranked_accounts else []
-
-            llm_pipeline_task = asyncio.create_task(run_llm_pipeline())
-
-            # --- Drain progress while tasks run ---
-            all_done = False
-            while not all_done:
-                all_tasks = [user_search_task, llm_pipeline_task] + bio_search_tasks
-                done_tasks = {t for t in all_tasks if t.done()}
-                all_done = len(done_tasks) == len(all_tasks)
-
+            # --- Drain progress / structured events while algorithm runs ---
+            while not algorithm_task.done():
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=0.5)
-                    # Check if this is a structured event (intent/queries)
                     if isinstance(msg, str) and msg.startswith("{"):
                         try:
                             parsed = json.loads(msg)
@@ -495,60 +333,19 @@ async def search(request: Request):
                         pass
                 yield {"event": "progress", "data": json.dumps({"message": msg})}
 
-            # --- Collect results from all legs ---
-            user_search_results = []
-            llm_results = []
+            # --- Collect algorithm result ---
+            result = algorithm_task.result()
 
-            try:
-                user_search_results = user_search_task.result()
-            except Exception as e:
-                print(f"User search failed: {e}")
-                traceback.print_exc()
-
-            # Collect bio search results
-            for task in bio_search_tasks:
-                try:
-                    bio_results = task.result()
-                    user_search_results.extend(bio_results)
-                except Exception as e:
-                    print(f"Bio search failed: {e}")
-
-            try:
-                llm_results = llm_pipeline_task.result()
-            except Exception as e:
-                print(f"LLM pipeline failed: {e}")
-                traceback.print_exc()
-
-            # --- Merge results ---
-            merged = merge_ranked_results(user_search_results, llm_results)
-
-            # For specific queries, drop good_match (deterministic safety net)
-            intent = shared_intent.get("intent")
-            if intent and intent.specificity >= 4:
-                merged = [r for r in merged if r.bucket in ("top_match", "strong_match")]
-
-            if not merged:
+            if not result.ranked_accounts:
                 yield {"event": "error", "data": json.dumps({"message": "No accounts found. Try broadening your search."})}
                 return
-
-            # Compute quality using bucket counts
-            from core.models import BUCKET_SORT_ORDER
-            top_count = sum(1 for r in merged if r.bucket == "top_match")
-            strong_count = sum(1 for r in merged if r.bucket == "strong_match")
-            good_count = sum(1 for r in merged if r.bucket == "good_match")
-            if top_count >= 3 and (top_count + strong_count) >= 5:
-                quality = "strong"
-            elif top_count >= 1 or (strong_count + good_count) >= 5:
-                quality = "moderate"
-            else:
-                quality = "weak"
 
             yield {
                 "event": "results",
                 "data": json.dumps({
-                    "ranked": [_serialize_account(r) for r in merged],
-                    "quality": quality,
-                    "refinement_questions": [],
+                    "ranked": [_serialize_account(r) for r in result.ranked_accounts],
+                    "quality": result.quality,
+                    "refinement_questions": result.refinement_questions,
                 }),
             }
 
