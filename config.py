@@ -28,6 +28,10 @@ TWITTER_CLIENT_ID = os.getenv("TWITTER_CLIENT_ID")
 TWITTER_CLIENT_SECRET = os.getenv("TWITTER_CLIENT_SECRET")
 TWITTER_REDIRECT_URI = os.getenv("TWITTER_REDIRECT_URI", "http://localhost:8000/api/auth/twitter/callback")
 
+# Server settings
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+PORT = int(os.getenv("PORT", "8000"))
+
 
 def is_oauth_configured() -> bool:
     """Check if Twitter OAuth credentials are set."""

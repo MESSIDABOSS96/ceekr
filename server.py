@@ -11,6 +11,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from algorithms import get_algorithm
 from config import (
+    FRONTEND_URL,
+    PORT,
     TWITTER_CLIENT_ID,
     TWITTER_CLIENT_SECRET,
     TWITTER_REDIRECT_URI,
@@ -34,7 +36,7 @@ app = FastAPI(title="Twitter Account Finder API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[FRONTEND_URL],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -79,10 +81,10 @@ async def auth_twitter_callback(code: str, state: str):
         # Start background network fetch
         asyncio.create_task(_fetch_network_background(session_token, user.user_id))
 
-        return RedirectResponse(f"http://localhost:3000?auth_token={session_token}")
+        return RedirectResponse(f"{FRONTEND_URL}?auth_token={session_token}")
     except Exception as e:
         traceback.print_exc()
-        return RedirectResponse(f"http://localhost:3000?auth_error={e}")
+        return RedirectResponse(f"{FRONTEND_URL}?auth_error={e}")
 
 
 @app.get("/api/auth/me")
@@ -358,4 +360,4 @@ async def search(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
