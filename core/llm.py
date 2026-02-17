@@ -491,13 +491,24 @@ class LLMClient:
                     bucket = item.get("bucket", "good_match")
                     summary = item.get("summary", "")
                     score = BUCKET_SCORE_MAP.get(bucket, 5.0)
+                    highlight_indices = item.get("highlight_tweet_indices", [])
+                    acc = accounts_by_handle[handle]
+
+                    # Ensure at least 1 tweet for non-exclude accounts
+                    if not highlight_indices and bucket != "exclude" and acc.recent_tweets:
+                        best_idx = max(
+                            range(len(acc.recent_tweets)),
+                            key=lambda i: acc.recent_tweets[i].like_count + acc.recent_tweets[i].retweet_count,
+                        )
+                        highlight_indices = [best_idx]
+
                     all_ranked.append(
                         RankedAccount(
-                            account=accounts_by_handle[handle],
+                            account=acc,
                             relevance_score=score,
                             bucket=bucket,
                             summary=summary,
-                            highlight_tweet_indices=item.get("highlight_tweet_indices", []),
+                            highlight_tweet_indices=highlight_indices,
                             why_relevant=summary or f"Matched as {bucket.replace('_', ' ')}.",
                             evidence_highlights=[],
                             confidence="high" if bucket == "top_match" else "medium" if bucket == "strong_match" else "low",

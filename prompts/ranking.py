@@ -81,9 +81,11 @@ For EACH account provide:
 - exclude: Leave empty string.
 
 **highlight_tweet_indices**: Indices (0-based) of the best tweets from their recent_tweets array.
+- ALWAYS include at least 1 tweet index for every non-exclude account. Never return an empty array for included accounts.
 - For topic-specific searches (specificity >= 3): Choose tweets demonstrating direct engagement with the SPECIFIC topic. Prioritize topical relevance over raw engagement.
 - For broad/general searches (specificity 1-2): Choose the most engaging or representative recent tweets.
-- Count: 2-3 for top_match/strong_match, 1-2 for good_match, empty for exclude.
+- If no tweet is directly relevant to the query, pick the most popular or representative recent tweet instead.
+- Count: 2-3 for top_match/strong_match, 1-2 for good_match, empty ONLY for exclude.
 
 Return accounts with top_match first, then strong_match, then good_match, then exclude.
 

@@ -18,11 +18,19 @@ interface ResultCardProps {
 export function ResultCard({ account: r }: ResultCardProps) {
   const pfpUrl = r.profile_image_url?.replace("_normal.", "_bigger.") || "";
 
-  const highlightedTweets = r.highlight_tweet_indices
+  let highlightedTweets = r.highlight_tweet_indices
     ?.map((i) => r.recent_tweets[i])
     .filter(Boolean)
     .filter((t, i, arr) => arr.findIndex((x) => x.id === t.id) === i)
     .slice(0, 3);
+
+  // Fallback: show the most popular tweet if none were highlighted
+  if ((!highlightedTweets || highlightedTweets.length === 0) && r.recent_tweets?.length > 0) {
+    const best = [...r.recent_tweets].sort(
+      (a, b) => (b.like_count + b.retweet_count) - (a.like_count + a.retweet_count)
+    )[0];
+    highlightedTweets = [best];
+  }
 
   return (
     <a
