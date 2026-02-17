@@ -45,7 +45,7 @@ def classify_query(raw_query: str) -> QueryClassification:
     return QueryClassification(QueryType.FULL_SEARCH, raw_query)
 
 
-def _candidate_handles(query: str) -> list[str]:
+def candidate_handles(query: str) -> list[str]:
     """Generate candidate Twitter handles from a name/keyword query."""
     words = query.lower().split()
     candidates = []
@@ -283,7 +283,7 @@ async def _try_profile_lookups(
     user_network: Optional[UserNetwork] = None,
 ) -> list[RankedAccount]:
     """Try direct profile lookups by guessing handles from a name query."""
-    candidates = _candidate_handles(query)
+    candidates = candidate_handles(query)
     if not candidates:
         return []
 
