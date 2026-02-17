@@ -87,7 +87,7 @@ export function TweetCard({
       target="_blank"
       rel="noopener noreferrer"
       onClick={(e) => e.stopPropagation()}
-      className="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-xl border border-border-subtle bg-surface-tweet"
+      className="flex w-[260px] shrink-0 flex-col overflow-hidden rounded-xl border border-border-subtle bg-surface-tweet"
     >
       {/* Header: avatar, name, handle, date, X logo */}
       <div className="flex items-center gap-2 px-3.5 pt-3 pb-1">
@@ -133,7 +133,7 @@ export function TweetCard({
           <img
             src={tweet.media_urls[0]}
             alt=""
-            className="mt-2.5 max-h-[160px] w-full rounded-lg object-cover"
+            className="mt-2.5 max-h-[120px] w-full rounded-lg object-cover"
           />
         )}
 

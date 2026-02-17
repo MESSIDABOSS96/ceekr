@@ -62,6 +62,9 @@ export function ResultCard({ account: r }: ResultCardProps) {
             {r.location && (
               <>
                 <span className="text-text-muted">&middot;</span>
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0 text-text-muted" fill="currentColor">
+                  <path d="M12 7c-1.93 0-3.5 1.57-3.5 3.5S10.07 14 12 14s3.5-1.57 3.5-3.5S13.93 7 12 7zm0 5c-.827 0-1.5-.673-1.5-1.5S11.173 9 12 9s1.5.673 1.5 1.5S12.827 12 12 12zm0-10c-4.687 0-8.5 3.813-8.5 8.5 0 5.967 7.621 11.116 7.945 11.332l.555.37.555-.37c.324-.216 7.945-5.365 7.945-11.332C20.5 5.813 16.687 2 12 2zm0 17.77c-1.665-1.241-6.5-5.196-6.5-9.27C5.5 6.916 8.416 4 12 4s6.5 2.916 6.5 6.5c0 4.073-4.835 8.028-6.5 9.27z" />
+                </svg>
                 <span className="text-text-primary truncate">{r.location}</span>
               </>
             )}
@@ -78,7 +81,7 @@ export function ResultCard({ account: r }: ResultCardProps) {
 
       {/* Highlighted tweets as horizontal card row */}
       {highlightedTweets && highlightedTweets.length > 0 && (
-        <div className="mt-4 flex gap-3 overflow-x-auto scrollbar-on-hover">
+        <div className="mt-4 flex gap-3.5 overflow-x-auto pb-3 scrollbar-subtle">
           {highlightedTweets.map((tweet) => (
             <TweetCard
               key={tweet.id}
