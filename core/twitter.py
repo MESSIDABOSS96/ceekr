@@ -510,8 +510,8 @@ class SearchOrchestrator:
                 removed += 1
                 continue
 
-            # No collected tweets
-            if not acc.recent_tweets:
+            # No collected tweets (exempt must_find accounts — they were explicitly sought)
+            if not acc.recent_tweets and "must_find" not in (acc.matched_queries or []):
                 removed += 1
                 continue
 

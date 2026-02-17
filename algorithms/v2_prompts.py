@@ -42,6 +42,12 @@ Generate strategies to find 5-8 high-quality seed accounts:
 
 **seed_accounts**: 0-5 known Twitter handles who are well-known in this space. Only include handles you are CONFIDENT exist and are relevant. Format: just the handle without @.
 
+**must_find_names**: Up to 5 well-known entity names that users would EXPECT to see in results for this query. Use real-world names, NOT Twitter handles.
+- Think: "top vc firms" → Sequoia Capital, Y Combinator, Andreessen Horowitz, Benchmark, etc.
+- List the most famous/obvious people, companies, or organizations in this space.
+- Use proper names (e.g., "Sequoia Capital" not "sequoia", "Marc Andreessen" not "pmarca").
+- Leave empty for niche queries where no well-known entities exist.
+
 **expansion_queries**: 2-3 broader queries to catch people in adjacent conversations. These run AFTER we have seeds and help fill gaps.
 
 **list_keywords**: 1-3 keywords for finding relevant Twitter lists (e.g., "AI researchers", "web3 founders"). Lists are a great way to discover people curated by the community.

@@ -39,6 +39,7 @@ from core.models import (
     Tweet,
     TwitterAccount,
 )
+from core.fast_path import candidate_handles
 from core.twitter import SearchOrchestrator, _tweet_recency_score
 
 from .v2_prompts import (
@@ -63,6 +64,7 @@ class V2SearchPlan:
     seed_queries: list[SearchQuery] = field(default_factory=list)
     seed_accounts: list[str] = field(default_factory=list)  # known handles
     expansion_queries: list[SearchQuery] = field(default_factory=list)
+    must_find_names: list[str] = field(default_factory=list)
     list_keywords: list[str] = field(default_factory=list)
 
 
@@ -108,6 +110,11 @@ class AlgorithmV2(SearchAlgorithm):
         queue: asyncio.Queue,
         user_network: Optional[UserNetwork] = None,
     ) -> AlgorithmResult:
+        # Step 0: Kick off user name search in parallel with LLM planning
+        user_search_task = asyncio.create_task(
+            self._discover_users_by_name(twitter, query, user_network)
+        )
+
         # Step 1: Intent + seed plan
         await queue.put("Reading your mind...")
         plan = await self._plan_search(query)
@@ -184,6 +191,14 @@ class AlgorithmV2(SearchAlgorithm):
 
             seed_tasks.append(asyncio.create_task(run_known_lookups()))
 
+        # 2d: Must-find name resolution
+        if plan.must_find_names:
+            async def run_must_find_resolution():
+                return await self._resolve_must_find_names(
+                    twitter, plan.must_find_names, user_network,
+                )
+            seed_tasks.append(asyncio.create_task(run_must_find_resolution()))
+
         # Gather all seed results
         seed_results = await asyncio.gather(*seed_tasks, return_exceptions=True)
 
@@ -198,9 +213,14 @@ class AlgorithmV2(SearchAlgorithm):
                 for acc in accounts:
                     self._add_or_merge_account(candidates, acc, "seed_tweet_search", user_network)
             elif isinstance(result, list):
-                # From bio search or known lookups — list of (source, user_data)
+                # From bio search, known lookups, or must_find — list of (source, user_data)
                 for source, user_data in result:
                     self._add_or_merge_user_data(candidates, user_data, source, user_network)
+
+        # 2e: Merge user name search results
+        user_name_results = await user_search_task
+        for source, user_data in user_name_results:
+            self._add_or_merge_user_data(candidates, user_data, source, user_network)
 
         print(f"[v2] {len(candidates)} seed candidates")
         await queue.put("Spotted some interesting people...")
@@ -449,6 +469,11 @@ class AlgorithmV2(SearchAlgorithm):
                             "items": {"type": "string"},
                             "description": "Known Twitter handles (without @) who are central to this topic",
                         },
+                        "must_find_names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Up to 5 well-known entity names (companies, people, orgs) users would expect in results. Real-world names, NOT handles.",
+                        },
                         "expansion_queries": {
                             "type": "array",
                             "items": {
@@ -469,7 +494,7 @@ class AlgorithmV2(SearchAlgorithm):
                     "required": [
                         "persona", "topic", "goal", "specificity",
                         "key_signals", "anti_signals", "bio_search_terms", "mandatory_terms",
-                        "seed_queries", "seed_accounts", "expansion_queries", "list_keywords",
+                        "seed_queries", "seed_accounts", "must_find_names", "expansion_queries", "list_keywords",
                     ],
                 },
             }
@@ -508,6 +533,7 @@ class AlgorithmV2(SearchAlgorithm):
                         for q in r.get("seed_queries", [])
                     ],
                     seed_accounts=r.get("seed_accounts", []),
+                    must_find_names=r.get("must_find_names", []),
                     expansion_queries=[
                         SearchQuery(query=q["query"], rationale=q["rationale"], angle=q["angle"])
                         for q in r.get("expansion_queries", [])
@@ -584,6 +610,98 @@ class AlgorithmV2(SearchAlgorithm):
                 sources=[source],
             )
 
+    # ── User / name discovery ────────────────────────────────────
+
+    async def _search_and_enrich(
+        self,
+        twitter: TwitterClient,
+        query: str,
+        max_results: int = 3,
+    ) -> list[dict]:
+        """Search users by query and enrich with full profile data."""
+        users = await twitter.search_users(query, max_results=max_results)
+        if not users:
+            return []
+
+        async def enrich(user_data: dict) -> dict | None:
+            try:
+                handle = user_data.get("screen_name", "")
+                if not handle:
+                    return None
+                full = await twitter.lookup_user(handle)
+                return full if full else user_data
+            except Exception:
+                return user_data
+
+        enriched = await asyncio.gather(*[enrich(u) for u in users])
+        return [u for u in enriched if u is not None]
+
+    async def _discover_users_by_name(
+        self,
+        twitter: TwitterClient,
+        query: str,
+        user_network: Optional[UserNetwork],
+    ) -> list[tuple[str, dict]]:
+        """Search users by name/handle and return enriched user dicts.
+
+        Returns list of (source_label, user_data) tuples ready for
+        _add_or_merge_user_data.  This is supplementary — failures return [].
+        """
+        try:
+            results: list[tuple[str, dict]] = []
+
+            # 1. Twitter user search API
+            enriched = await self._search_and_enrich(twitter, query, max_results=10)
+            for u in enriched:
+                results.append(("user_name_search", u))
+
+            # 2. Fallback: guess handles from name if user search returned nothing
+            if not results:
+                handles = candidate_handles(query)
+                async def try_handle(h: str) -> dict | None:
+                    try:
+                        return await twitter.lookup_user(h)
+                    except Exception:
+                        return None
+
+                lookups = await asyncio.gather(*[try_handle(h) for h in handles])
+                for u in lookups:
+                    if u is not None:
+                        results.append(("handle_guess", u))
+
+            return results
+        except Exception as e:
+            print(f"[v2] User name discovery failed: {e}")
+            return []
+
+    async def _resolve_must_find_names(
+        self,
+        twitter: TwitterClient,
+        names: list[str],
+        user_network: Optional[UserNetwork],
+    ) -> list[tuple[str, dict]]:
+        """Resolve well-known entity names to Twitter accounts."""
+        results: list[tuple[str, dict]] = []
+
+        async def resolve_one(name: str) -> tuple[str, dict] | None:
+            try:
+                enriched = await self._search_and_enrich(twitter, name, max_results=3)
+                return ("must_find", enriched[0]) if enriched else None
+            except Exception as e:
+                print(f"[v2] must_find: failed to resolve '{name}': {e}")
+                return None
+
+        resolved = await asyncio.gather(
+            *[resolve_one(name) for name in names[:5]],
+            return_exceptions=True,
+        )
+        for r in resolved:
+            if r is not None and not isinstance(r, Exception):
+                results.append(r)
+
+        print(f"[v2] must_find: resolved {len(results)}/{len(names[:5])} names")
+        return results
+
     # ── Step 5: Heuristic scoring ─────────────────────────────
 
     def _score_candidates(
@@ -620,16 +738,18 @@ class AlgorithmV2(SearchAlgorithm):
                     tweet_score += 5
             c.tweet_score = min(30, tweet_score)
 
-            # Graph signal (0-20)
+            # Graph signal (0-25)
             source_set = set(c.sources)
             graph_score = 0.0
             if "similar_profiles" in source_set:
                 graph_score += 10
             if "verified_followers" in source_set:
                 graph_score += 5
+            if "must_find" in source_set:
+                graph_score += 5
             if len(c.sources) > 1:
                 graph_score += 5
-            c.graph_score = min(20, graph_score)
+            c.graph_score = min(25, graph_score)
 
             # List signal (0-20)
             list_score = 0.0

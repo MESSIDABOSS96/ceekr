@@ -2,13 +2,16 @@
 """
 Automated test suite for Twitter Account Finder search algorithm.
 
-Six layers:
+Nine layers:
   1. Classification tests (instant, no API calls)
   2. End-to-end name search tests (live API, ~3s each)
   3. Result quality tests (live API, ~3s each)
   4. Complex discovery queries (live API, ~20-30s each)
   5. Short & ambiguous queries (live API, ~5-10s each)
   6. Edge cases & stress tests (live API, ~5-10s each)
+  7. User name discovery tests (live API, no LLM, ~2s each)
+  8. Must-find name resolution tests (live API, no LLM, ~2s each)
+  9. Must-find E2E tests (live API, full pipeline, ~30s each)
 
 Usage:
     python3 tests/test_search.py              # all tests
@@ -18,7 +21,10 @@ Usage:
     python3 tests/test_search.py complex       # complex discovery queries (live API)
     python3 tests/test_search.py short         # short & ambiguous queries (live API)
     python3 tests/test_search.py edge          # edge cases & stress tests (live API)
-    python3 tests/test_search.py fast          # classify + edge only (no LLM pipeline)
+    python3 tests/test_search.py discovery     # user name discovery only (live API, no LLM)
+    python3 tests/test_search.py mustfind      # must-find name resolution (live API, no LLM)
+    python3 tests/test_search.py mustfind-e2e  # must-find E2E (live API, full pipeline)
+    python3 tests/test_search.py fast          # classify + discovery + mustfind + edge (no LLM pipeline)
 """
 
 import asyncio
@@ -646,13 +652,188 @@ async def run_edge_tests() -> tuple[int, int]:
     return passed, total
 
 
+# ══════════════════════════════════════════════════════
+# 7. Discovery tests (live API, no LLM)
+# ══════════════════════════════════════════════════════
+
+DISCOVERY_TESTS = [
+    # (query, min_results)
+    ("janak sunil", 1),
+    ("elon musk", 1),
+    ("sam altman", 1),
+]
+
+
+async def run_discovery_tests() -> tuple[int, int]:
+    """Run user name discovery tests (SocialData API only, no LLM). Returns (passed, total)."""
+    from core.twitter import TwitterClient
+
+    print(f"\n{BOLD}User Name Discovery (live API, no LLM):{RESET}")
+
+    passed = 0
+    total = len(DISCOVERY_TESTS)
+
+    twitter = TwitterClient()
+
+    for query, min_results in DISCOVERY_TESTS:
+        start = time.time()
+        try:
+            # Call search_users + enrich (same pattern as V2's _discover_users_by_name)
+            user_results = await twitter.search_users(query, max_results=10)
+
+            enriched = []
+            if user_results:
+                async def enrich(user_data: dict) -> dict | None:
+                    handle = user_data.get("screen_name", "")
+                    if not handle:
+                        return None
+                    full = await twitter.lookup_user(handle)
+                    return full if full else user_data
+
+                enriched_raw = await asyncio.gather(*[enrich(u) for u in user_results])
+                enriched = [u for u in enriched_raw if u is not None]
+
+            elapsed = time.time() - start
+
+            if len(enriched) >= min_results:
+                # Verify enriched data has required fields
+                sample = enriched[0]
+                has_fields = all(
+                    sample.get(f) is not None
+                    for f in ("id_str", "screen_name", "description", "followers_count")
+                )
+                if has_fields:
+                    handles = [u.get("screen_name", "?") for u in enriched[:5]]
+                    print(_pass(f'"{query}" -> {len(enriched)} enriched users: @{", @".join(handles)} [{elapsed:.1f}s]'))
+                    passed += 1
+                else:
+                    missing = [f for f in ("id_str", "screen_name", "description", "followers_count") if sample.get(f) is None]
+                    print(_fail(f'"{query}" -> enriched but missing fields: {missing} [{elapsed:.1f}s]'))
+            else:
+                print(_fail(f'"{query}" -> {len(enriched)} enriched (need >={min_results}) [{elapsed:.1f}s]'))
+
+        except Exception as e:
+            elapsed = time.time() - start
+            print(_fail(f'"{query}" -> ERROR: {e} [{elapsed:.1f}s]'))
+
+    print(f"  Discovery: {passed}/{total} passed")
+    return passed, total
+
+
+# ══════════════════════════════════════════════════════
+# 8. Must-find name resolution tests (live API, no LLM)
+# ══════════════════════════════════════════════════════
+
+MUST_FIND_TESTS = [
+    # (names, expected_min_resolved)
+    (["Sequoia Capital", "Y Combinator"], 2),
+    (["Andreessen Horowitz", "OpenAI"], 2),
+]
+
+
+async def run_must_find_tests() -> tuple[int, int]:
+    """Run must-find name resolution tests (SocialData API only, no LLM). Returns (passed, total)."""
+    from algorithms.v2 import AlgorithmV2
+    from core.twitter import TwitterClient
+
+    print(f"\n{BOLD}Must-Find Name Resolution (live API, no LLM):{RESET}")
+
+    passed = 0
+    total = len(MUST_FIND_TESTS)
+
+    twitter = TwitterClient()
+    algo = AlgorithmV2()
+
+    for names, min_resolved in MUST_FIND_TESTS:
+        start = time.time()
+        try:
+            results = await algo._resolve_must_find_names(twitter, names, None)
+            elapsed = time.time() - start
+
+            if len(results) >= min_resolved:
+                # Verify enriched data has required fields
+                all_valid = True
+                for source, user_data in results:
+                    has_fields = all(
+                        user_data.get(f) is not None
+                        for f in ("id_str", "screen_name", "description", "followers_count")
+                    )
+                    if not has_fields:
+                        all_valid = False
+                        break
+
+                if all_valid:
+                    handles = [u.get("screen_name", "?") for _, u in results]
+                    print(_pass(f'{names} -> {len(results)} resolved: @{", @".join(handles)} [{elapsed:.1f}s]'))
+                    passed += 1
+                else:
+                    print(_fail(f'{names} -> resolved but missing fields [{elapsed:.1f}s]'))
+            else:
+                print(_fail(f'{names} -> {len(results)} resolved (need >={min_resolved}) [{elapsed:.1f}s]'))
+
+        except Exception as e:
+            elapsed = time.time() - start
+            print(_fail(f'{names} -> ERROR: {e} [{elapsed:.1f}s]'))
+
+    print(f"  Must-Find: {passed}/{total} passed")
+    return passed, total
+
+
+# ══════════════════════════════════════════════════════
+# 9. Must-find E2E tests (live API, full pipeline)
+# ══════════════════════════════════════════════════════
+
+MUST_FIND_E2E_TESTS = [
+    # (query, expected_handles_any_of, min_expected)
+    ("top vc firms", ["sequoia", "ycombinator", "a16z", "benchmark"], 1),
+]
+
+
+async def run_must_find_e2e_tests() -> tuple[int, int]:
+    """Run must-find E2E tests (full pipeline via server). Returns (passed, total)."""
+    import httpx
+
+    print(f"\n{BOLD}Must-Find E2E (live API, full pipeline):{RESET}")
+
+    passed = 0
+    total = len(MUST_FIND_E2E_TESTS)
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for query, expected_handles, min_expected in MUST_FIND_E2E_TESTS:
+            start = time.time()
+            try:
+                results = await _run_search(client, query)
+                elapsed = time.time() - start
+
+                if not results:
+                    print(_fail(f'"{query}" -> no results [{elapsed:.1f}s]'))
+                    continue
+
+                result_handles = [r["handle"].lower() for r in results]
+                found = [h for h in expected_handles if h.lower() in result_handles]
+
+                if len(found) >= min_expected:
+                    print(_pass(f'"{query}" -> found {found} in results ({len(results)} total) [{elapsed:.1f}s]'))
+                    passed += 1
+                else:
+                    top_handles = [f"@{r['handle']}" for r in results[:10]]
+                    print(_fail(f'"{query}" -> found {found} of {expected_handles} (need >={min_expected}). Top 10: {", ".join(top_handles)} [{elapsed:.1f}s]'))
+
+            except Exception as e:
+                elapsed = time.time() - start
+                print(_fail(f'"{query}" -> ERROR: {e} [{elapsed:.1f}s]'))
+
+    print(f"  Must-Find E2E: {passed}/{total} passed")
+    return passed, total
+
+
 # ── Main ────────────────────────────────────────────
 
 
 async def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
 
-    valid_modes = {"all", "classify", "names", "quality", "complex", "short", "edge", "fast"}
+    valid_modes = {"all", "classify", "names", "quality", "complex", "short", "edge", "discovery", "fast", "mustfind", "mustfind-e2e"}
     if mode not in valid_modes:
         print(f"Unknown mode: {mode}")
         print(f"Valid modes: {', '.join(sorted(valid_modes))}")
@@ -687,6 +868,21 @@ async def main():
 
     if mode in ("all", "short"):
         p, t = await run_short_tests()
+        total_passed += p
+        total_tests += t
+
+    if mode in ("all", "discovery", "fast"):
+        p, t = await run_discovery_tests()
+        total_passed += p
+        total_tests += t
+
+    if mode in ("all", "mustfind", "fast"):
+        p, t = await run_must_find_tests()
+        total_passed += p
+        total_tests += t
+
+    if mode in ("all", "mustfind-e2e"):
+        p, t = await run_must_find_e2e_tests()
         total_passed += p
         total_tests += t
 
