@@ -32,12 +32,24 @@ export function ResultCard({ account: r }: ResultCardProps) {
     highlightedTweets = [best];
   }
 
+  const handleCardClick = (e: React.MouseEvent) => {
+    // Don't navigate if the user is selecting text
+    const selection = window.getSelection();
+    if (selection && selection.toString().length > 0) return;
+    // Don't navigate if clicking an inner link (e.g. tweet card)
+    if ((e.target as HTMLElement).closest("a")) return;
+    window.open(r.profile_url, "_blank", "noopener,noreferrer");
+  };
+
   return (
-    <a
-      href={r.profile_url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group flex flex-col rounded-2xl border border-border-subtle bg-surface-card p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-white/12 hover:shadow-[0_8px_24px_rgba(0,0,0,0.3)] focus-visible:outline-2 focus-visible:outline-twitter"
+    <div
+      role="link"
+      tabIndex={0}
+      onClick={handleCardClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") window.open(r.profile_url, "_blank", "noopener,noreferrer");
+      }}
+      className="group flex cursor-pointer flex-col rounded-2xl border border-border-subtle bg-surface-card p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-white/12 hover:shadow-[0_8px_24px_rgba(0,0,0,0.3)] focus-visible:outline-2 focus-visible:outline-twitter"
     >
       {/* Header row: avatar + info */}
       <div className="flex items-start gap-3">
@@ -80,9 +92,9 @@ export function ResultCard({ account: r }: ResultCardProps) {
         </div>
       </div>
 
-      {/* Summary as primary text */}
+      {/* Summary as primary text — selectable */}
       {(r.summary || r.why_relevant) && (
-        <p className="mt-4 text-[0.85rem] leading-relaxed text-text-body">
+        <p className="mt-4 cursor-text select-text text-[0.85rem] leading-relaxed text-text-body">
           {r.summary || r.why_relevant}
         </p>
       )}
@@ -102,6 +114,6 @@ export function ResultCard({ account: r }: ResultCardProps) {
           ))}
         </div>
       )}
-    </a>
+    </div>
   );
 }
