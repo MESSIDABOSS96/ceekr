@@ -393,7 +393,10 @@ export function SearchPage({ initialState, onSearchComplete, onReset }: SearchPa
       {/* Results */}
       {state.phase === "results" && (
         <>
-          <div className="space-y-4">
+          <div
+            className="grid gap-4 justify-center"
+            style={{ gridTemplateColumns: "repeat(2, 504px)" }}
+          >
             {filteredResults.map((r) => (
               <ResultCard key={r.user_id} account={r} />
             ))}

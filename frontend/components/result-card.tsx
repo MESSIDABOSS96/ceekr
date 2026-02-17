@@ -29,7 +29,7 @@ export function ResultCard({ account: r }: ResultCardProps) {
       href={r.profile_url}
       target="_blank"
       rel="noopener noreferrer"
-      className="group block rounded-2xl border border-border-subtle bg-surface-card p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-white/12 hover:shadow-[0_8px_24px_rgba(0,0,0,0.3)] focus-visible:outline-2 focus-visible:outline-twitter"
+      className="group flex flex-col rounded-2xl border border-border-subtle bg-surface-card p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-white/12 hover:shadow-[0_8px_24px_rgba(0,0,0,0.3)] focus-visible:outline-2 focus-visible:outline-twitter"
     >
       {/* Header row: avatar + info */}
       <div className="flex items-start gap-3">
@@ -81,7 +81,7 @@ export function ResultCard({ account: r }: ResultCardProps) {
 
       {/* Highlighted tweets as horizontal card row */}
       {highlightedTweets && highlightedTweets.length > 0 && (
-        <div className="mt-4 flex gap-3.5 overflow-x-auto pb-3 scrollbar-subtle">
+        <div className="mt-auto flex gap-3.5 overflow-x-auto pt-4 pb-3 scrollbar-subtle">
           {highlightedTweets.map((tweet) => (
             <TweetCard
               key={tweet.id}

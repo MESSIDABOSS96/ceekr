@@ -29,7 +29,7 @@ export default function RootLayout({
         <div className="vignette" />
         <div className="relative z-10">
           <div className="flex min-h-screen justify-center">
-            <main className="w-full max-w-[860px] px-4">
+            <main className="w-full max-w-[1040px] px-4">
               {children}
             </main>
           </div>
