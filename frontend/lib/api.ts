@@ -90,7 +90,9 @@ export async function streamSearch(
         if (line.startsWith("event:")) {
           currentEvent = line.slice(6).trim();
         } else if (line.startsWith("data:")) {
-          currentData = line.slice(5).trim();
+          // Concatenate multi-line data fields per SSE spec
+          const chunk = line.slice(5).trim();
+          currentData = currentData ? currentData + "\n" + chunk : chunk;
         } else if (line === "") {
           // Empty line = end of SSE message
           if (currentEvent && currentData) {
@@ -100,6 +102,11 @@ export async function streamSearch(
           currentData = "";
         }
       }
+    }
+
+    // Flush any remaining buffered event after stream ends
+    if (currentEvent && currentData) {
+      dispatchEvent(currentEvent, currentData, callbacks);
     }
   } finally {
     reader.releaseLock();
