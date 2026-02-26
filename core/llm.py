@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import math
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -13,8 +15,10 @@ from config import (
     ANTHROPIC_FAST_MODEL,
     ANTHROPIC_MODEL,
     MAX_BIO_LENGTH,
+    MAX_QUERIES,
     MAX_TWEET_LENGTH,
     MAX_TWEETS_FOR_RANKING,
+    MIN_QUERIES,
     RANKING_BATCH_SIZE,
     RECENCY_BONUS_WINDOW_DAYS,
     STALE_ACCOUNT_DAYS,
@@ -31,6 +35,42 @@ from .models import (
 from prompts.ranking import format_ranking_prompt
 from prompts.chat import format_chat_system_prompt
 from prompts.search_plan import format_search_plan_prompt, format_fallback_prompt
+from prompts.axis_discovery import (
+    AXIS_DISCOVERY_TOOL,
+    format_axis_discovery_prompt,
+)
+from prompts.journal_generation import (
+    JOURNAL_GENERATION_TOOL,
+    format_journal_generation_prompt,
+)
+
+
+def validate_query(q: str) -> str:
+    """Repair queries that would return zero results on Twitter."""
+    original = q
+    # Remove parentheses
+    q = q.replace("(", "").replace(")", "")
+    # Remove extra OR operators (keep at most 1)
+    or_count = len(re.findall(r'\bOR\b', q))
+    if or_count > 1:
+        parts = re.split(r'\bOR\b', q)
+        q = parts[0] + "OR" + parts[1]
+        # Drop remaining OR parts
+    # Count quoted phrases
+    quoted = re.findall(r'"[^"]*"', q)
+    if len(quoted) > 1:
+        # Keep first quoted phrase + up to 1 extra word
+        remaining = q
+        for phrase in quoted[1:]:
+            remaining = remaining.replace(phrase, "", 1)
+        extra_words = remaining.split()
+        # Remove the first quoted phrase from extra_words to avoid duplication
+        extra_words = [w for w in extra_words if w not in quoted[0]]
+        q = quoted[0] + (" " + extra_words[0] if extra_words else "")
+    q = q.strip()
+    if q != original:
+        print(f"[validate_query] Repaired: {original!r} → {q!r}")
+    return q
 
 
 class LLMClient:
@@ -97,7 +137,7 @@ class LLMClient:
                         },
                         "queries": {
                             "type": "array",
-                            "description": "5 Twitter search queries from different angles",
+                            "description": "3-7 Twitter search queries from different angles (count based on specificity)",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -147,12 +187,17 @@ class LLMClient:
             if block.type == "tool_use":
                 result = block.input
 
+                specificity = result.get("specificity", 3)
+                # Dynamic query count: broad → more queries, specific → fewer
+                specificity_to_count = {1: 7, 2: 6, 3: 5, 4: 4, 5: 3}
+                query_count = specificity_to_count.get(specificity, 5)
+
                 intent = SearchIntent(
                     persona=result.get("persona", ""),
                     topic=result.get("topic", ""),
                     goal=result.get("goal", ""),
-                    specificity=result.get("specificity", 3),
-                    suggested_query_count=5,
+                    specificity=specificity,
+                    suggested_query_count=query_count,
                     bio_search_terms=result.get("bio_search_terms", []),
                     key_signals=result.get("key_signals", []),
                     anti_signals=result.get("anti_signals", []),
@@ -167,6 +212,11 @@ class LLMClient:
                     )
                     for q in result.get("queries", [])
                 ]
+
+                # Enforce query count bounds
+                queries = queries[:max(query_count, MAX_QUERIES)]
+                if len(queries) < MIN_QUERIES:
+                    print(f"[queries] LLM returned {len(queries)}, expected {query_count}")
 
                 return intent, queries
 
@@ -317,6 +367,7 @@ class LLMClient:
         intent: SearchIntent,
         accounts: list[TwitterAccount],
         user_network=None,
+        anchors: Optional[list[dict]] = None,
     ) -> list[dict]:
         """Rank a single batch of accounts. Returns raw ranked dicts."""
         accounts_data = []
@@ -421,12 +472,23 @@ class LLMClient:
                                         "description": "0-based indices of most relevant tweets",
                                         "items": {"type": "integer"},
                                     },
+                                    "evidence_highlights": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "1-2 direct quotes from tweets/bio proving relevance (for non-exclude accounts)",
+                                    },
+                                    "suggested_approach": {
+                                        "type": "string",
+                                        "description": "1-sentence suggestion for how to engage (for top_match/strong_match only, empty string otherwise)",
+                                    },
                                 },
                                 "required": [
                                     "handle",
                                     "bucket",
                                     "summary",
                                     "highlight_tweet_indices",
+                                    "evidence_highlights",
+                                    "suggested_approach",
                                 ],
                             },
                         },
@@ -438,9 +500,19 @@ class LLMClient:
 
         prompt = format_ranking_prompt(intent, accounts_json)
 
+        # Add anchor context for cross-batch consistency
+        if anchors:
+            anchor_text = json.dumps(anchors, indent=2)
+            prompt += f"""
+
+## Calibration Anchors
+The following accounts have already been evaluated in a previous batch. Use them as reference points for consistent bucket assignment — do NOT re-score them, just use their buckets as calibration:
+{anchor_text}
+"""
+
         response = await self.client.messages.create(
             model=self.fast_model,
-            max_tokens=8192,
+            max_tokens=12288,
             tools=tools,
             tool_choice={"type": "tool", "name": "rank_accounts"},
             messages=[{"role": "user", "content": prompt}],
@@ -468,12 +540,33 @@ class LLMClient:
         for i in range(0, len(accounts), RANKING_BATCH_SIZE):
             batches.append(accounts[i : i + RANKING_BATCH_SIZE])
 
-        # Rank all batches in parallel
-        tasks = [
-            self._rank_batch(intent, batch, user_network)
-            for batch in batches
-        ]
-        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Rank batches: first batch alone to extract anchors, rest in parallel
+        batch_results: list = []
+        anchor_accounts: list[dict] = []
+
+        if batches:
+            # First batch — no anchors
+            first_result = await self._rank_batch(intent, batches[0], user_network)
+            if isinstance(first_result, Exception):
+                print(f"Ranking batch 0 failed: {first_result}")
+                batch_results.append(first_result)
+            else:
+                batch_results.append(first_result)
+                # Extract top 3 as anchors for subsequent batches
+                anchor_accounts = [
+                    {"handle": item["handle"], "bucket": item["bucket"], "summary": item.get("summary", "")}
+                    for item in first_result
+                    if item.get("bucket") == "top_match"
+                ][:3]
+
+            # Remaining batches in parallel with anchors
+            if len(batches) > 1:
+                tasks = [
+                    self._rank_batch(intent, batch, user_network, anchors=anchor_accounts if anchor_accounts else None)
+                    for batch in batches[1:]
+                ]
+                rest_results = await asyncio.gather(*tasks, return_exceptions=True)
+                batch_results.extend(rest_results)
 
         # Merge results from all batches
         from core.models import BUCKET_SCORE_MAP
@@ -496,11 +589,19 @@ class LLMClient:
 
                     # Ensure at least 1 tweet for non-exclude accounts
                     if not highlight_indices and bucket != "exclude" and acc.recent_tweets:
-                        best_idx = max(
-                            range(len(acc.recent_tweets)),
-                            key=lambda i: acc.recent_tweets[i].like_count + acc.recent_tweets[i].retweet_count,
-                        )
-                        highlight_indices = [best_idx]
+                        # Try to find tweets matching key signals or mandatory terms
+                        search_terms = [s.lower() for s in (intent.key_signals + intent.mandatory_terms)]
+                        for idx, tweet in enumerate(acc.recent_tweets):
+                            if any(term in tweet.text.lower() for term in search_terms):
+                                highlight_indices = [idx]
+                                break
+                        # Final fallback: most engaged tweet
+                        if not highlight_indices:
+                            best_idx = max(
+                                range(len(acc.recent_tweets)),
+                                key=lambda i: acc.recent_tweets[i].like_count + acc.recent_tweets[i].retweet_count,
+                            )
+                            highlight_indices = [best_idx]
 
                     all_ranked.append(
                         RankedAccount(
@@ -510,16 +611,24 @@ class LLMClient:
                             summary=summary,
                             highlight_tweet_indices=highlight_indices,
                             why_relevant=summary or f"Matched as {bucket.replace('_', ' ')}.",
-                            evidence_highlights=[],
+                            evidence_highlights=item.get("evidence_highlights", []),
+                            suggested_approach=item.get("suggested_approach") or None,
                             confidence="high" if bucket == "top_match" else "medium" if bucket == "strong_match" else "low",
                         )
                     )
 
-        # Sort by bucket tier then followers
+        # Sort by bucket tier, then composite score within each bucket
         from core.models import BUCKET_SORT_ORDER
-        all_ranked.sort(
-            key=lambda r: (BUCKET_SORT_ORDER.get(r.bucket, 3), -r.account.followers_count),
-        )
+
+        def _within_bucket_sort_key(r: RankedAccount) -> tuple:
+            query_signal = len(r.account.matched_queries) * 3
+            # Average engagement across top tweets
+            tweets = r.account.recent_tweets[:3]
+            avg_engagement = sum(t.like_count + t.retweet_count for t in tweets) / max(len(tweets), 1)
+            follower_log = math.log10(max(r.account.followers_count, 1))
+            return (BUCKET_SORT_ORDER.get(r.bucket, 3), -(query_signal + avg_engagement * 0.1 + follower_log))
+
+        all_ranked.sort(key=_within_bucket_sort_key)
 
         # Filter out excluded accounts
         filtered = [r for r in all_ranked if r.bucket != "exclude"]
@@ -699,3 +808,117 @@ class LLMClient:
         # Fallback: extract text response
         text_parts = [b.text for b in response.content if hasattr(b, "text")]
         return {"response": " ".join(text_parts) if text_parts else "I'm not sure how to help with that. Want to refine your search?"}
+
+    @staticmethod
+    def _build_enriched_summaries(ranked_accounts: list[RankedAccount]) -> str:
+        """Build enriched account summaries (~120 tokens/person) for axis discovery and journal generation."""
+        lines = []
+        for ra in ranked_accounts:
+            acc = ra.account
+            bio_snippet = (acc.bio or "")[:100]
+            # Get a tweet snippet from evidence_highlights or first tweet
+            tweet_snippet = ""
+            if ra.evidence_highlights:
+                tweet_snippet = ra.evidence_highlights[0][:120]
+            elif acc.recent_tweets:
+                tweet_snippet = acc.recent_tweets[0].text[:120]
+            parts = [f"@{acc.handle}", acc.name, bio_snippet]
+            if ra.summary:
+                parts.append(f'summary: "{ra.summary[:150]}"')
+            if tweet_snippet:
+                parts.append(f'tweet: "{tweet_snippet}"')
+            lines.append(" | ".join(parts))
+        return "\n".join(lines)
+
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def discover_axes(
+        self,
+        intent: SearchIntent,
+        ranked_accounts: list[RankedAccount],
+    ) -> tuple[list[dict], str, str]:
+        """
+        Discover 2-4 meaningful grouping axes for the result set.
+
+        Returns (axes, recommended_key, recommendation_reason).
+        Each axis dict has: axis_key, axis_label, example_groups.
+        """
+        enriched = self._build_enriched_summaries(ranked_accounts)
+        prompt = format_axis_discovery_prompt(intent, enriched)
+
+        response = await self.client.messages.create(
+            model=self.fast_model,
+            max_tokens=2048,
+            tools=[AXIS_DISCOVERY_TOOL],
+            tool_choice={"type": "tool", "name": "discover_axes"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        for block in response.content:
+            if block.type == "tool_use":
+                result = block.input
+                axes = result.get("axes", [])
+                recommended_key = result.get("recommended_axis_key", "")
+                reason = result.get("recommendation_reason", "")
+                return axes, recommended_key, reason
+
+        return [], "", ""
+
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def generate_journals(
+        self,
+        intent: SearchIntent,
+        ranked_accounts: list[RankedAccount],
+        axis_label: str,
+        example_groups: list[str],
+    ) -> tuple[str, list[dict]]:
+        """
+        Cluster ranked accounts into semantic journals along a single axis.
+
+        Returns (summary, journals) where journals is a list of dicts with
+        label, description, handles, journal_notes.
+        """
+        enriched = self._build_enriched_summaries(ranked_accounts)
+        prompt = format_journal_generation_prompt(intent, enriched, axis_label, example_groups)
+
+        response = await self.client.messages.create(
+            model=self.fast_model,
+            max_tokens=4096,
+            tools=[JOURNAL_GENERATION_TOOL],
+            tool_choice={"type": "tool", "name": "create_journals"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        for block in response.content:
+            if block.type == "tool_use":
+                result = block.input
+                summary = result.get("summary", "")
+                journals = result.get("journals", [])
+                break
+        else:
+            return "", []
+
+        # Post-LLM validation: ensure every handle appears in exactly one journal
+        all_handles = {ra.account.handle.lower() for ra in ranked_accounts}
+        seen: set[str] = set()
+
+        for journal in journals:
+            unique_handles = []
+            for h in journal.get("handles", []):
+                h_lower = h.lower().lstrip("@")
+                if h_lower not in seen:
+                    seen.add(h_lower)
+                    unique_handles.append(h_lower)
+            journal["handles"] = unique_handles
+
+        # Assign unplaced handles to the largest journal
+        unplaced = all_handles - seen
+        if unplaced and journals:
+            largest = max(journals, key=lambda j: len(j.get("handles", [])))
+            largest["handles"].extend(sorted(unplaced))
+            # Add notes for unplaced handles
+            notes = largest.get("journal_notes", {})
+            for h in unplaced:
+                notes[h] = "Auto-assigned"
+            largest["journal_notes"] = notes
+
+        return summary, journals

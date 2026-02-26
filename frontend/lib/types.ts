@@ -82,3 +82,45 @@ export const DEFAULT_FILTERS: Filters = {
   location: "",
   verified: null,
 };
+
+// ── Workspace types ──
+
+export type JournalTheme = "topic" | "role" | "location" | "approach" | "career_stage" | "community";
+
+export interface WorkspaceJournal {
+  id: string;
+  label: string;
+  description: string;
+  theme: JournalTheme;
+  color: string;
+  people_count: number;
+  canvas_x: number;
+  canvas_y: number;
+  enrichment_status?: string;
+}
+
+export interface JournalOverlap {
+  journal_a: string;
+  journal_b: string;
+  shared_count: number;
+  shared_handles: string[];
+}
+
+export interface WorkspaceData {
+  workspace_id: string;
+  query: string;
+  status: "creating" | "ready" | "enriching";
+  summary: string;
+  quality: "strong" | "moderate" | "weak";
+  total_people: number;
+  refinement_questions: string[];
+  journals: WorkspaceJournal[];
+  overlaps: JournalOverlap[];
+  intent?: SearchIntent;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface JournalPerson extends RankedAccount {
+  journal_note: string;
+}

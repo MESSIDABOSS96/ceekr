@@ -63,6 +63,14 @@
   --color-quality-strong: oklch(0.67 0.155 163);
   --color-quality-moderate: oklch(0.75 0.163 70);
   --color-quality-weak: oklch(0.58 0.22 27);
+
+  /* Journal theme colors */
+  --color-journal-topic: #6366f1;
+  --color-journal-role: #8b5cf6;
+  --color-journal-location: #06b6d4;
+  --color-journal-approach: #f59e0b;
+  --color-journal-career-stage: #10b981;
+  --color-journal-community: #ec4899;
 }
 
 :root {

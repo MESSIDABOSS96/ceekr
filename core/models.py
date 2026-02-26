@@ -1,8 +1,9 @@
 """Pydantic models for Twitter Account Finder."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -197,3 +198,72 @@ class RankingResponse(BaseModel):
         default_factory=list,
         description="1-2 clarifying questions if quality is weak",
     )
+
+
+# ── Workspace models ──────────────────────────────────────────
+
+
+class GroupingAxis(BaseModel):
+    """A discovered axis for grouping people in a workspace."""
+    id: str = Field(default_factory=lambda: f"ax-{uuid4().hex[:8]}")
+    axis_key: str = Field(..., description="e.g. 'contribution_area'")
+    axis_label: str = Field(..., description="e.g. 'By contribution area'")
+    example_groups: list[str] = Field(default_factory=list, description="Preview group labels")
+
+
+class WorkspaceStatus(str, Enum):
+    """Status of a workspace."""
+    CREATING = "creating"
+    READY = "ready"
+    ENRICHING = "enriching"
+
+
+class JournalPerson(BaseModel):
+    """A person's membership in a journal."""
+    user_id: str = Field(..., description="Twitter user ID")
+    handle: str = Field(..., description="Twitter handle")
+    journal_note: str = Field("", description="Why this person is in this journal")
+    added_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class Journal(BaseModel):
+    """A semantic group of people within a workspace."""
+    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+    label: str = Field(..., description="Short label for this group")
+    description: str = Field("", description="What this group represents")
+    theme: str = Field("", description="Deprecated — use axis_id instead")
+    axis_id: Optional[str] = Field(None, description="ID of the grouping axis this journal belongs to")
+    color: str = Field("#6366f1", description="Display color hex")
+    people: list[JournalPerson] = Field(default_factory=list)
+    canvas_x: float = Field(0.0, description="X position on workspace canvas")
+    canvas_y: float = Field(0.0, description="Y position on workspace canvas")
+    enrichment_status: str = Field("pending", description="pending/enriching/done")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ChatMessage(BaseModel):
+    """A message in the workspace chat history."""
+    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+    role: str = Field(..., description="user or assistant")
+    content: str = Field(..., description="Message content")
+    action: Optional[dict] = Field(None, description="Optional action payload")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class Workspace(BaseModel):
+    """A research workspace created from a query."""
+    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+    query: str = Field(..., description="Original search query")
+    status: WorkspaceStatus = Field(WorkspaceStatus.CREATING)
+    intent: Optional[SearchIntent] = None
+    journals: list[Journal] = Field(default_factory=list)
+    axes: list[GroupingAxis] = Field(default_factory=list, description="Available grouping axes")
+    active_axis_id: Optional[str] = Field(None, description="Currently active axis ID")
+    recommendation_reason: str = Field("", description="Why the default axis was chosen")
+    quality: str = Field("moderate", description="strong/moderate/weak")
+    summary: str = Field("", description="Executive summary of results")
+    total_people: int = Field(0)
+    refinement_questions: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

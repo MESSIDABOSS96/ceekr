@@ -87,6 +87,17 @@ For EACH account provide:
 - If no tweet is directly relevant to the query, pick the most popular or representative recent tweet instead.
 - Count: 2-3 for top_match/strong_match, 1-2 for good_match, empty ONLY for exclude.
 
+**evidence_highlights**: 1-2 direct quotes from their tweets or bio that prove relevance.
+- For top_match/strong_match: Include the most compelling quote showing topic engagement.
+- For good_match: 1 brief quote or bio excerpt.
+- For exclude: Empty array.
+- Quote format: "tweet: [exact quote]" or "bio: [exact quote]"
+
+**suggested_approach**: For top_match/strong_match only — a 1-sentence specific suggestion for engaging.
+- Reference a specific tweet or topic to reply to.
+- Example: "Reply to their thread on distributed systems with your experience scaling payments."
+- For good_match/exclude: Empty string.
+
 Return accounts with top_match first, then strong_match, then good_match, then exclude.
 
 ## Accounts to Evaluate
@@ -101,7 +112,17 @@ def format_ranking_prompt(intent: SearchIntent, accounts_json: str) -> str:
 
     if intent.mandatory_terms:
         terms_str = ", ".join(f'"{t}"' for t in intent.mandatory_terms)
-        mandatory_terms_section = f"""## Key Relevance Terms
+        if intent.specificity >= 4:
+            mandatory_terms_section = f"""## Mandatory Relevance Terms (HARD GATE)
+
+Key terms for this search: {terms_str}
+
+This is a specific search (specificity {intent.specificity}/5). These terms are NON-NEGOTIABLE:
+- If an account does NOT mention at least one of these terms in their bio, tweets, or handle → EXCLUDE. No exceptions.
+- Topical adjacency alone is NOT sufficient. Someone who talks about startups is not a YC founder unless they explicitly mention YC.
+- Only accounts with clear, direct evidence of association with these terms can be non-exclude."""
+        else:
+            mandatory_terms_section = f"""## Key Relevance Terms
 
 Key terms for this search: {terms_str}
 

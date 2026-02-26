@@ -14,7 +14,7 @@ from core.fast_path import (
     merge_ranked_results,
     score_user_search_results,
 )
-from core.llm import LLMClient
+from core.llm import LLMClient, validate_query
 from core.models import BUCKET_SORT_ORDER
 from core.twitter import SearchOrchestrator
 
@@ -106,14 +106,10 @@ class AlgorithmV1(SearchAlgorithm):
             }))
 
             # Launch bio keyword searches in parallel (Leg A extension)
-            bio_terms = intent.bio_search_terms
-            if intent.mandatory_terms:
-                bio_terms = [
-                    t for t in bio_terms
-                    if any(mt.lower() in t.lower() for mt in intent.mandatory_terms)
-                ]
-                seen = set()
-                bio_terms = [t for t in bio_terms if not (t.lower() in seen or seen.add(t.lower()))]
+            # Use all bio_search_terms as-is (LLM generated them for relevance)
+            # Deduplicate only
+            seen = set()
+            bio_terms = [t for t in intent.bio_search_terms if not (t.lower() in seen or seen.add(t.lower()))]
             for term in bio_terms:
                 task = asyncio.create_task(
                     score_user_search_results(twitter, term, user_network=user_network)
@@ -137,7 +133,7 @@ class AlgorithmV1(SearchAlgorithm):
             async def search_status(msg: str):
                 await queue.put(msg)
 
-            query_strings = [q.query for q in queries]
+            query_strings = [validate_query(q.query) for q in queries]
             accounts = await orchestrator.execute_searches(
                 query_strings, search_status, user_network=user_network,
             )
@@ -149,7 +145,7 @@ class AlgorithmV1(SearchAlgorithm):
                     intent, query_strings, len(accounts),
                 )
                 if fallback_queries:
-                    fallback_strings = [q.query for q in fallback_queries]
+                    fallback_strings = [validate_query(q.query) for q in fallback_queries]
                     fallback_accounts = await orchestrator.execute_searches(
                         fallback_strings, search_status, user_network=user_network,
                     )
@@ -211,11 +207,24 @@ class AlgorithmV1(SearchAlgorithm):
             print(f"LLM pipeline failed: {e}")
             traceback.print_exc()
 
+        # --- Filter user search results by mandatory terms (high-specificity) ---
+        intent = shared_intent.get("intent")
+        if intent and intent.specificity >= 4 and intent.mandatory_terms:
+            terms_lower = [t.lower() for t in intent.mandatory_terms]
+
+            def _has_mandatory_term(r) -> bool:
+                text = f"{r.account.name} {r.account.handle} {r.account.bio or ''}".lower()
+                return any(t in text for t in terms_lower)
+
+            before = len(user_search_results)
+            user_search_results = [r for r in user_search_results if _has_mandatory_term(r)]
+            if before != len(user_search_results):
+                print(f"[mandatory_terms] Filtered user search: {before} → {len(user_search_results)}")
+
         # --- Merge results ---
         merged = merge_ranked_results(user_search_results, llm_results)
 
         # For specific queries, drop good_match
-        intent = shared_intent.get("intent")
         if intent and intent.specificity >= 4:
             merged = [r for r in merged if r.bucket in ("top_match", "strong_match")]
 
@@ -226,13 +235,16 @@ class AlgorithmV1(SearchAlgorithm):
                 refinement_questions=["Try broadening your search."],
             )
 
-        # Compute quality using bucket counts
+        # Compute quality using bucket counts, scaled by specificity
         top_count = sum(1 for r in merged if r.bucket == "top_match")
         strong_count = sum(1 for r in merged if r.bucket == "strong_match")
         good_count = sum(1 for r in merged if r.bucket == "good_match")
-        if top_count >= 3 and (top_count + strong_count) >= 5:
+        spec = intent.specificity if intent else 3
+        top_threshold = max(1, 4 - spec)       # spec 5 → 1, spec 1 → 3
+        combined_threshold = max(2, 6 - spec)   # spec 5 → 2, spec 1 → 5
+        if top_count >= top_threshold and (top_count + strong_count) >= combined_threshold:
             quality = "strong"
-        elif top_count >= 1 or (strong_count + good_count) >= 5:
+        elif top_count >= 1 or (strong_count + good_count) >= combined_threshold:
             quality = "moderate"
         else:
             quality = "weak"

@@ -54,9 +54,14 @@ Examples:
 - If looking for "ML engineers fine-tuning LLMs": ["ML engineer", "machine learning", "AI researcher", "deep learning"]
 - If looking for "founders doing customer discovery": ["founder", "CEO", "building", "startup"]
 
-## Part 2: Generate 5 Twitter Search Queries
+## Part 2: Generate Twitter Search Queries
 
-Always generate exactly 5 search queries.
+Generate a number of queries based on the specificity you determined above:
+- Specificity 1 → 7 queries (broad search needs diverse angles)
+- Specificity 2 → 6 queries
+- Specificity 3 → 5 queries
+- Specificity 4 → 4 queries
+- Specificity 5 → 3 queries (specific search needs fewer, targeted queries)
 
 ### Twitter Search Rules (CRITICAL - read carefully)
 Twitter search is very restrictive. Complex queries return ZERO results. Follow these rules strictly:

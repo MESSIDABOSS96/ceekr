@@ -23,6 +23,9 @@ SOCIALDATA_API_KEY = os.getenv("SOCIALDATA_API_KEY")
 # Algorithm version: "v1" (default) or "v2" (seed & expand)
 ALGORITHM_VERSION = os.getenv("ALGORITHM", "v1")
 
+# Database
+DATABASE_PATH = os.getenv("DATABASE_PATH", "ceekr.db")
+
 # Twitter OAuth 2.0 settings (optional — enables network matching)
 TWITTER_CLIENT_ID = os.getenv("TWITTER_CLIENT_ID")
 TWITTER_CLIENT_SECRET = os.getenv("TWITTER_CLIENT_SECRET")
@@ -41,8 +44,8 @@ def is_oauth_configured() -> bool:
 
 
 # Search settings
-MIN_QUERIES = 5  # Number of search queries to generate (fixed)
-MAX_QUERIES = 5  # Number of search queries to generate (fixed)
+MIN_QUERIES = 3  # Minimum search queries (high specificity)
+MAX_QUERIES = 7  # Maximum search queries (low specificity)
 TWEETS_PER_QUERY = 50  # Number of tweets to fetch per query
 
 # Pre-filter thresholds

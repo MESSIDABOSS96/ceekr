@@ -6,13 +6,14 @@ import { ProgressRing } from "@/components/progress-ring";
 import { FilterChips } from "@/components/filter-chips";
 import { FilterPanel } from "@/components/filter-panel";
 import { ResultCard } from "@/components/result-card";
-import { streamSearch } from "@/lib/api";
+import { streamSearch, streamWorkspace } from "@/lib/api";
 import { applyFilters } from "@/lib/filter-utils";
 import { DEFAULT_FILTERS } from "@/lib/types";
 import type {
   SearchQuery,
   RankedAccount,
   Filters,
+  WorkspaceData,
 } from "@/lib/types";
 
 // ── Props ─────────────────────────────────────────────────
@@ -36,6 +37,7 @@ export interface SearchCompletePayload {
 interface SearchPageProps {
   initialState?: InitialSearchState;
   onSearchComplete?: (payload: SearchCompletePayload) => void;
+  onWorkspaceCreated?: (data: WorkspaceData) => void;
   onReset?: () => void;
 }
 
@@ -166,7 +168,7 @@ function getSearchProgress(state: State): number {
 
 // ── Component ─────────────────────────────────────────────
 
-export function SearchPage({ initialState, onSearchComplete, onReset }: SearchPageProps) {
+export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated, onReset }: SearchPageProps) {
   const [state, dispatch] = useReducer(reducer, initialState, buildInitialState);
   const abortRef = useRef<AbortController | null>(null);
   const queriesRef = useRef<SearchQuery[]>([]);
@@ -218,42 +220,59 @@ export function SearchPage({ initialState, onSearchComplete, onReset }: SearchPa
       dispatch({ type: "SET_QUERY", query: queryText });
       dispatch({ type: "START_SEARCH" });
 
-      streamSearch(
-        queryText,
-        {
-          onProgress: (message) =>
-            dispatch({ type: "PROGRESS", message }),
-          onQueries: (queries) => {
-            queriesRef.current = queries;
-            dispatch({ type: "QUERIES", queries });
-          },
-          onResults: (results) => {
-            dispatch({
-              type: "RESULTS",
-              ranked: results.ranked,
-              quality: results.quality,
-              refinement_questions: results.refinement_questions,
-            });
-            dispatch({ type: "SET_QUERY", query: "" });
-            onSearchComplete?.({
-              query: queryText,
-              results: results.ranked,
-              quality: results.quality,
-              refinementQuestions: results.refinement_questions,
-              queries: queriesRef.current,
-            });
-          },
-          onError: (message) => {
-            dispatch({ type: "ERROR", message });
-          },
-        },
-        controller.signal,
-      ).catch((err) => {
+      const progressCb = (message: string) => dispatch({ type: "PROGRESS", message });
+      const queriesCb = (queries: SearchQuery[]) => {
+        queriesRef.current = queries;
+        dispatch({ type: "QUERIES", queries });
+      };
+      const errorCb = (message: string) => dispatch({ type: "ERROR", message });
+      const catchCb = (err: unknown) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        dispatch({ type: "ERROR", message: String(err.message || err) });
-      });
+        dispatch({ type: "ERROR", message: String((err as Error).message || err) });
+      };
+
+      if (onWorkspaceCreated) {
+        streamWorkspace(
+          queryText,
+          {
+            onProgress: progressCb,
+            onQueries: queriesCb,
+            onWorkspace: (data) => {
+              onWorkspaceCreated(data);
+            },
+            onError: errorCb,
+          },
+          controller.signal,
+        ).catch(catchCb);
+      } else {
+        streamSearch(
+          queryText,
+          {
+            onProgress: progressCb,
+            onQueries: queriesCb,
+            onResults: (results) => {
+              dispatch({
+                type: "RESULTS",
+                ranked: results.ranked,
+                quality: results.quality,
+                refinement_questions: results.refinement_questions,
+              });
+              dispatch({ type: "SET_QUERY", query: "" });
+              onSearchComplete?.({
+                query: queryText,
+                results: results.ranked,
+                quality: results.quality,
+                refinementQuestions: results.refinement_questions,
+                queries: queriesRef.current,
+              });
+            },
+            onError: errorCb,
+          },
+          controller.signal,
+        ).catch(catchCb);
+      }
     },
-    [onSearchComplete],
+    [onSearchComplete, onWorkspaceCreated],
   );
 
   const handleSubmit = useCallback(() => {

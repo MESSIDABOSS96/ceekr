@@ -2,26 +2,26 @@
 
 import { useRouter } from "next/navigation";
 import { SearchPage } from "@/components/search-page";
-import type { SearchCompletePayload } from "@/components/search-page";
-import { generateId } from "@/lib/nanoid";
-import { saveSearch } from "@/lib/search-storage";
+import { DotGridBackground } from "@/components/dot-grid-background";
+import { FloatingAstronauts } from "@/components/floating-astronauts";
+import { saveOverlaps } from "@/lib/workspace-storage";
+import type { WorkspaceData } from "@/lib/types";
 
 export default function Home() {
   const router = useRouter();
 
-  const handleSearchComplete = (payload: SearchCompletePayload) => {
-    const id = generateId();
-    saveSearch({
-      id,
-      query: payload.query,
-      results: payload.results,
-      quality: payload.quality,
-      refinementQuestions: payload.refinementQuestions,
-      queries: payload.queries,
-      createdAt: Date.now(),
-    });
-    router.replace(`/s/${id}`);
+  const handleWorkspaceCreated = (data: WorkspaceData) => {
+    if (data.overlaps?.length) {
+      saveOverlaps(data.workspace_id, data.overlaps);
+    }
+    router.push(`/w/${data.workspace_id}`);
   };
 
-  return <SearchPage onSearchComplete={handleSearchComplete} />;
+  return (
+    <div className="mx-auto max-w-[1040px] px-4">
+      <DotGridBackground />
+      <FloatingAstronauts />
+      <SearchPage onWorkspaceCreated={handleWorkspaceCreated} />
+    </div>
+  );
 }
