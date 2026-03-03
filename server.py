@@ -406,6 +406,7 @@ async def create_workspace(request: Request):
     """Create a workspace from a query — SSE stream."""
     token = request.headers.get("x-session-token")
     session = get_session(token) if token else None
+    session_id = request.headers.get("x-session-id")
 
     body = await request.json()
     query = body.get("query", "").strip()
@@ -426,7 +427,7 @@ async def create_workspace(request: Request):
 
             orchestrator = WorkspaceOrchestrator(db)
             orchestrator_task = asyncio.create_task(
-                orchestrator.create_workspace(query, twitter, queue, user_network)
+                orchestrator.create_workspace(query, twitter, queue, user_network, session_id=session_id)
             )
 
             # Drain progress events while orchestrator runs
@@ -607,10 +608,11 @@ async def update_layout(workspace_id: str, request: Request):
 
 
 @app.get("/api/workspaces")
-async def list_workspaces():
-    """List all workspaces."""
+async def list_workspaces(request: Request):
+    """List workspaces for the current session."""
     db: WorkspaceDB = app.state.db
-    workspaces = await db.list_workspaces()
+    session_id = request.headers.get("x-session-id")
+    workspaces = await db.list_workspaces(session_id=session_id)
     return {"workspaces": workspaces}
 
 

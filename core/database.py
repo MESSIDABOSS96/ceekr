@@ -80,6 +80,7 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE workspaces ADD COLUMN active_axis_id TEXT",
     "ALTER TABLE workspaces ADD COLUMN recommendation_reason TEXT DEFAULT ''",
     "ALTER TABLE journals ADD COLUMN axis_id TEXT",
+    "ALTER TABLE workspaces ADD COLUMN session_id TEXT",
 ]
 
 
@@ -116,11 +117,11 @@ class WorkspaceDB:
 
     # ── Workspace CRUD ─────────────────────────────────────
 
-    async def create_workspace(self, workspace_id: str, query: str) -> dict:
+    async def create_workspace(self, workspace_id: str, query: str, session_id: str | None = None) -> dict:
         now = _now_iso()
         await self._db.execute(
-            "INSERT INTO workspaces (id, query, status, created_at, updated_at) VALUES (?, ?, 'creating', ?, ?)",
-            (workspace_id, query, now, now),
+            "INSERT INTO workspaces (id, query, status, session_id, created_at, updated_at) VALUES (?, ?, 'creating', ?, ?, ?)",
+            (workspace_id, query, session_id, now, now),
         )
         await self._db.commit()
         return {"id": workspace_id, "query": query, "status": "creating", "created_at": now}
@@ -152,11 +153,17 @@ class WorkspaceDB:
             return None
         return dict(row)
 
-    async def list_workspaces(self, limit: int = 50) -> list[dict]:
-        cursor = await self._db.execute(
-            "SELECT id, query, status, summary, quality, created_at, updated_at FROM workspaces ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        )
+    async def list_workspaces(self, limit: int = 50, session_id: str | None = None) -> list[dict]:
+        if session_id:
+            cursor = await self._db.execute(
+                "SELECT id, query, status, summary, quality, created_at, updated_at FROM workspaces WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+                (session_id, limit),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT id, query, status, summary, quality, created_at, updated_at FROM workspaces ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 

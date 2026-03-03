@@ -9,6 +9,7 @@ import type {
   JournalPerson,
   IntentCheckResponse,
 } from "./types";
+import { getSessionId } from "./sidebar-storage";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -178,7 +179,7 @@ export async function streamWorkspace(
 ) {
   const response = await fetch(`${API_URL}/api/workspace`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-session-id": getSessionId() },
     body: JSON.stringify({ query }),
     signal,
   });
@@ -373,7 +374,9 @@ export async function streamChat(
 }
 
 export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
-  const res = await fetch(`${API_URL}/api/workspaces`);
+  const res = await fetch(`${API_URL}/api/workspaces`, {
+    headers: { "x-session-id": getSessionId() },
+  });
   if (!res.ok) throw new Error(`Server error: ${res.status}`);
   const data = await res.json();
   return data.workspaces;

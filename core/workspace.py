@@ -228,6 +228,7 @@ class WorkspaceOrchestrator:
         twitter,
         queue: asyncio.Queue,
         user_network=None,
+        session_id: str | None = None,
     ) -> dict:
         """
         Full workspace creation flow:
@@ -240,7 +241,7 @@ class WorkspaceOrchestrator:
         7. Return workspace payload
         """
         workspace_id = uuid4().hex[:12]
-        await self.db.create_workspace(workspace_id, query)
+        await self.db.create_workspace(workspace_id, query, session_id=session_id)
 
         # Run existing algorithm pipeline (streams progress/intent/queries via queue)
         algorithm = get_algorithm()
