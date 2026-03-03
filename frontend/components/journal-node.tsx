@@ -86,8 +86,7 @@ export function JournalNode({
     [onOpen, onDragEnd],
   );
 
-  const scaledWidth = NODE_WIDTH * scale;
-  const scaledHeight = NODE_HEIGHT * scale;
+  const titleOpacity = scale < 0.45 ? 0 : scale < 0.55 ? (scale - 0.45) / 0.1 : 1;
 
   return (
     <div
@@ -98,8 +97,9 @@ export function JournalNode({
       style={{
         left: screenX,
         top: screenY,
-        width: scaledWidth,
-        height: scaledHeight,
+        width: NODE_WIDTH,
+        height: NODE_HEIGHT,
+        transform: `scale(${scale})`,
         transformOrigin: "top left",
       }}
       onPointerDown={handlePointerDown}
@@ -112,8 +112,8 @@ export function JournalNode({
       >
         <div className="flex-1 min-h-0 px-3 py-2.5 flex flex-col gap-1">
           <p
-            className="font-semibold text-text-primary line-clamp-2 leading-tight"
-            style={{ fontSize: Math.max(11, 13 * scale) }}
+            className="font-semibold text-text-primary line-clamp-2 leading-tight text-[13px]"
+            style={{ opacity: titleOpacity, transition: "opacity 150ms" }}
           >
             {journal.label}
           </p>
@@ -121,7 +121,6 @@ export function JournalNode({
             <span
               className="inline-flex items-center rounded-full px-2 py-0.5 font-medium"
               style={{
-                fontSize: Math.max(9, 11 * scale),
                 backgroundColor: journal.color + "18",
                 color: journal.color,
               }}
@@ -129,8 +128,7 @@ export function JournalNode({
               {journal.people_count}
             </span>
             <span
-              className="text-text-muted capitalize truncate"
-              style={{ fontSize: Math.max(9, 10 * scale) }}
+              className="text-text-muted capitalize truncate text-[10px]"
             >
               {(journal.theme || "").replace("_", " ")}
             </span>

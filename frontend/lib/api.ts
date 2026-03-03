@@ -1,14 +1,19 @@
 import type {
+  ActivityStep,
+  ChatAction,
+  ChatMessage,
   SearchQuery,
   SearchResults,
   WorkspaceData,
+  WorkspaceSummary,
   JournalPerson,
+  IntentCheckResponse,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 interface StreamCallbacks {
-  onProgress?: (message: string) => void;
+  onProgress?: (data: Record<string, unknown>) => void;
   onQueries?: (queries: SearchQuery[]) => void;
   onResults?: (results: SearchResults) => void;
   onError?: (message: string) => void;
@@ -24,7 +29,7 @@ function dispatchEvent(
     const parsed = JSON.parse(data);
     switch (event) {
       case "progress":
-        callbacks.onProgress?.(parsed.message);
+        callbacks.onProgress?.(parsed);
         break;
       case "queries":
         callbacks.onQueries?.(parsed);
@@ -116,10 +121,24 @@ export async function streamSearch(
   }
 }
 
+// ── Intent check ──
+
+export async function checkIntent(query: string): Promise<IntentCheckResponse> {
+  const response = await fetch(`${API_URL}/api/intent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+  if (!response.ok) {
+    throw new Error(`Server error: ${response.status}`);
+  }
+  return response.json();
+}
+
 // ── Workspace SSE + REST ──
 
 interface WorkspaceStreamCallbacks {
-  onProgress?: (message: string) => void;
+  onProgress?: (data: Record<string, unknown>) => void;
   onQueries?: (queries: SearchQuery[]) => void;
   onWorkspace?: (data: WorkspaceData) => void;
   onError?: (message: string) => void;
@@ -135,7 +154,7 @@ function dispatchWorkspaceEvent(
     const parsed = JSON.parse(data);
     switch (event) {
       case "progress":
-        callbacks.onProgress?.(parsed.message);
+        callbacks.onProgress?.(parsed);
         break;
       case "queries":
         callbacks.onQueries?.(parsed);
@@ -248,4 +267,123 @@ export async function updateLayout(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ positions }),
   });
+}
+
+// ── Workspace Chat SSE ──
+
+interface ChatStreamCallbacks {
+  onToken: (text: string) => void;
+  onAction: (action: ChatAction) => void;
+  onDone: () => void;
+  onError: (message: string) => void;
+}
+
+export async function streamChat(
+  workspaceId: string,
+  message: string,
+  activeJournalId: string | null,
+  callbacks: ChatStreamCallbacks,
+  signal?: AbortSignal,
+) {
+  const response = await fetch(`${API_URL}/api/workspace/${workspaceId}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, active_journal_id: activeJournalId }),
+    signal,
+  });
+
+  if (!response.ok) {
+    callbacks.onError(`Server error: ${response.status}`);
+    callbacks.onDone();
+    return;
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    callbacks.onError("No response stream");
+    callbacks.onDone();
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let currentEvent = "";
+  let currentData = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, "");
+        if (line.startsWith(":")) continue;
+
+        if (line.startsWith("event:")) {
+          currentEvent = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          const chunk = line.slice(5).trim();
+          currentData = currentData ? currentData + "\n" + chunk : chunk;
+        } else if (line === "") {
+          if (currentEvent && currentData) {
+            try {
+              const parsed = JSON.parse(currentData);
+              switch (currentEvent) {
+                case "token":
+                  callbacks.onToken(parsed.text);
+                  break;
+                case "action":
+                  callbacks.onAction(parsed);
+                  break;
+                case "error":
+                  callbacks.onError(parsed.message);
+                  break;
+                case "done":
+                  break;
+              }
+            } catch {
+              // Skip malformed JSON
+            }
+          }
+          currentEvent = "";
+          currentData = "";
+        }
+      }
+    }
+
+    // Flush remaining
+    if (currentEvent && currentData) {
+      try {
+        const parsed = JSON.parse(currentData);
+        if (currentEvent === "token") callbacks.onToken(parsed.text);
+        else if (currentEvent === "action") callbacks.onAction(parsed);
+        else if (currentEvent === "error") callbacks.onError(parsed.message);
+      } catch {
+        // Skip malformed JSON
+      }
+    }
+  } finally {
+    reader.releaseLock();
+    callbacks.onDone();
+  }
+}
+
+export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
+  const res = await fetch(`${API_URL}/api/workspaces`);
+  if (!res.ok) throw new Error(`Server error: ${res.status}`);
+  const data = await res.json();
+  return data.workspaces;
+}
+
+export async function fetchChatHistory(workspaceId: string): Promise<ChatMessage[]> {
+  const response = await fetch(`${API_URL}/api/workspace/${workspaceId}/chat`);
+  if (!response.ok) {
+    throw new Error(`Server error: ${response.status}`);
+  }
+  const data = await response.json();
+  return data.messages;
 }

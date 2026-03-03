@@ -8,14 +8,10 @@ import traceback
 from typing import TYPE_CHECKING, Optional
 
 from algorithms import AlgorithmResult, SearchAlgorithm
-from config import MIN_ACCOUNTS_BEFORE_FALLBACK
-from core.fast_path import (
-    light_filter,
-    merge_ranked_results,
-    score_user_search_results,
-)
+from config import MIN_ACCOUNTS_BEFORE_FALLBACK, RANKING_BATCH_SIZE
+from core.fast_path import score_user_search_results
 from core.llm import LLMClient, validate_query
-from core.models import BUCKET_SORT_ORDER
+from core.models import TwitterAccount
 from core.twitter import SearchOrchestrator
 
 if TYPE_CHECKING:
@@ -62,7 +58,7 @@ class AlgorithmV1(SearchAlgorithm):
         queue: asyncio.Queue,
         user_network: Optional[UserNetwork] = None,
     ) -> AlgorithmResult:
-        await queue.put("Scanning Twitter...")
+        await queue.put(json.dumps({"message": "Scanning Twitter...", "step": "init"}))
 
         llm = LLMClient()
 
@@ -79,7 +75,7 @@ class AlgorithmV1(SearchAlgorithm):
         async def run_llm_pipeline() -> list:
             """Run the full LLM pipeline: intent → queries → tweet search → rank."""
             # Step 1: Analyze intent + generate queries
-            await queue.put("Understanding your search...")
+            await queue.put(json.dumps({"message": "Understanding your search...", "step": "intent_analysis"}))
             intent, queries = await llm.plan_search(query, None)
 
             # Fallback: if LLM didn't extract mandatory_terms, derive from query
@@ -131,7 +127,7 @@ class AlgorithmV1(SearchAlgorithm):
             orchestrator = SearchOrchestrator(twitter)
 
             async def search_status(msg: str):
-                await queue.put(msg)
+                await queue.put(json.dumps({"message": msg, "step": "searching"}))
 
             query_strings = [validate_query(q.query) for q in queries]
             accounts = await orchestrator.execute_searches(
@@ -140,7 +136,7 @@ class AlgorithmV1(SearchAlgorithm):
 
             # Step 2b: Fallback queries if too few accounts
             if len(accounts) < MIN_ACCOUNTS_BEFORE_FALLBACK:
-                await queue.put(f"Only {len(accounts)} accounts found, broadening search...")
+                await queue.put(json.dumps({"message": f"Only {len(accounts)} accounts found, broadening search...", "step": "fallback", "counts": {"found": len(accounts)}}))
                 fallback_queries = await llm.generate_fallback_queries(
                     intent, query_strings, len(accounts),
                 )
@@ -156,21 +152,9 @@ class AlgorithmV1(SearchAlgorithm):
                             existing_ids.add(acc.user_id)
 
             if not accounts:
-                return []
+                return [], []
 
-            # Step 3: Pre-filter
-            await queue.put(f"Sifting through {len(accounts)} accounts...")
-            filtered, removed = SearchOrchestrator.pre_filter_accounts(accounts, intent)
-            if not filtered:
-                return []
-
-            await queue.put(f"Narrowed to {len(filtered)} promising matches")
-
-            # Step 4: Rank with LLM
-            await queue.put(f"Ranking {len(filtered)} accounts by relevance...")
-            ranking = await llm.rank_accounts(intent, filtered, user_network=user_network)
-
-            return ranking.ranked_accounts if ranking.ranked_accounts else []
+            return accounts, []
 
         llm_pipeline_task = asyncio.create_task(run_llm_pipeline())
 
@@ -185,8 +169,8 @@ class AlgorithmV1(SearchAlgorithm):
                 await asyncio.sleep(0.1)
 
         # --- Collect results from all legs ---
-        user_search_results = []
-        llm_results = []
+        user_search_results: list = []  # RankedAccount from user/bio search
+        tweet_search_accounts: list[TwitterAccount] = []  # Raw accounts from tweet search
 
         try:
             user_search_results = user_search_task.result()
@@ -202,30 +186,87 @@ class AlgorithmV1(SearchAlgorithm):
                 print(f"Bio search failed: {e}")
 
         try:
-            llm_results = llm_pipeline_task.result()
+            pipeline_result = llm_pipeline_task.result()
+            if isinstance(pipeline_result, tuple):
+                tweet_search_accounts = pipeline_result[0]
+            else:
+                tweet_search_accounts = pipeline_result if pipeline_result else []
         except Exception as e:
             print(f"LLM pipeline failed: {e}")
             traceback.print_exc()
 
-        # --- Filter user search results by mandatory terms (high-specificity) ---
         intent = shared_intent.get("intent")
-        if intent and intent.specificity >= 4 and intent.mandatory_terms:
+
+        # --- Merge user-search accounts into tweet-search pool for unified LLM ranking ---
+        # Extract TwitterAccount objects from user-search RankedAccounts
+        existing_ids = {a.user_id for a in tweet_search_accounts}
+        user_search_accounts: list[TwitterAccount] = []
+        for r in user_search_results:
+            if r.account.user_id not in existing_ids:
+                user_search_accounts.append(r.account)
+                existing_ids.add(r.account.user_id)
+
+        # Filter user search accounts by mandatory terms before adding to pool
+        if intent and intent.mandatory_terms:
             terms_lower = [t.lower() for t in intent.mandatory_terms]
 
-            def _has_mandatory_term(r) -> bool:
-                text = f"{r.account.name} {r.account.handle} {r.account.bio or ''}".lower()
+            def _has_mandatory_term(acc: TwitterAccount) -> bool:
+                text = f"{acc.name} {acc.handle} {acc.bio or ''}".lower()
                 return any(t in text for t in terms_lower)
 
-            before = len(user_search_results)
-            user_search_results = [r for r in user_search_results if _has_mandatory_term(r)]
-            if before != len(user_search_results):
-                print(f"[mandatory_terms] Filtered user search: {before} → {len(user_search_results)}")
+            before = len(user_search_accounts)
+            user_search_accounts = [a for a in user_search_accounts if _has_mandatory_term(a)]
+            if before != len(user_search_accounts):
+                print(f"[mandatory_terms] Filtered user search accounts: {before} → {len(user_search_accounts)}")
 
-        # --- Merge results ---
-        merged = merge_ranked_results(user_search_results, llm_results)
+        # Combine all accounts into unified pool
+        all_accounts = tweet_search_accounts + user_search_accounts
+        print(f"[v1] Combined pool: {len(tweet_search_accounts)} tweet-search + {len(user_search_accounts)} user-search = {len(all_accounts)}")
+
+        if all_accounts and intent:
+            # Pre-filter the combined pool
+            await queue.put(json.dumps({"message": f"Sifting through {len(all_accounts)} accounts...", "step": "filtering", "counts": {"total": len(all_accounts)}}))
+            filtered, removed = SearchOrchestrator.pre_filter_accounts(all_accounts, intent)
+
+            if filtered:
+                await queue.put(json.dumps({"message": f"Narrowed to {len(filtered)} promising matches", "step": "filtering_done", "counts": {"passed": len(filtered)}}))
+
+                # Triage large sets before expensive LLM ranking
+                if len(filtered) > RANKING_BATCH_SIZE:
+                    await queue.put(json.dumps({"message": "Quick-screening candidates...", "step": "triage"}))
+                    filtered = await llm.triage_accounts(intent, filtered)
+                    print(f"[triage] {len(filtered)} accounts passed triage")
+
+                # LLM rank the unified pool
+                await queue.put(json.dumps({"message": f"Ranking {len(filtered)} accounts by relevance...", "step": "ranking", "counts": {"accounts": len(filtered)}}))
+                ranking = await llm.rank_accounts(intent, filtered, user_network=user_network)
+                merged = ranking.ranked_accounts if ranking.ranked_accounts else []
+            else:
+                merged = []
+        else:
+            merged = []
 
         # For specific queries, drop good_match
-        if intent and intent.specificity >= 4:
+        # Post-ranking mandatory_terms enforcement for high-specificity searches
+        if intent and intent.specificity >= 4 and intent.mandatory_terms:
+            terms_lower = [t.lower() for t in intent.mandatory_terms]
+            before = len(merged)
+            enforced = []
+            for r in merged:
+                text = f"{r.account.name} {r.account.handle} {r.account.bio or ''}"
+                for t in r.account.recent_tweets:
+                    text += f" {t.text}"
+                text = text.lower()
+                if any(t in text for t in terms_lower):
+                    enforced.append(r)
+                else:
+                    print(f"[mandatory_enforce] Excluded @{r.account.handle}: no mandatory term in bio/tweets")
+            merged = enforced
+            if before != len(merged):
+                print(f"[mandatory_enforce] {before} → {len(merged)}")
+
+        # For ultra-specific queries, drop good_match
+        if intent and intent.specificity >= 5:
             merged = [r for r in merged if r.bucket in ("top_match", "strong_match")]
 
         if not merged:
@@ -233,6 +274,7 @@ class AlgorithmV1(SearchAlgorithm):
                 ranked_accounts=[],
                 quality="weak",
                 refinement_questions=["Try broadening your search."],
+                intent=intent,
             )
 
         # Compute quality using bucket counts, scaled by specificity
@@ -253,4 +295,5 @@ class AlgorithmV1(SearchAlgorithm):
             ranked_accounts=merged,
             quality=quality,
             refinement_questions=[],
+            intent=intent,
         )

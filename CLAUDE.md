@@ -61,6 +61,16 @@ Events streamed: `progress`, `intent`, `queries`, `results`, `error`
 - [ ] Auto-outreach: Generate personalized DMs/replies
 - [ ] Deeper network analysis: 2nd-degree connections
 
+## Current Development Objectives
+
+> Always reference and update CLAUDE.md/MEMORY.md at session start, even after context is cleared.
+
+**Workstream: Search Quality + Speed**
+
+1. **Speed**: Workspace journal grouping adds ~5-8s of sequential LLM calls. Cut by reusing `SearchIntent` from algorithm and combining axis discovery + journal generation into one LLM call.
+2. **Relevance/Explainability**: Journal groupings don't match user intent (e.g. "recent YC founders" → "Strategic Thought Leaders"). Ground axis discovery in search intent; add transparency into why results were returned.
+3. **Result storage for analysis**: Store search results to workspace (`/w/{id}`) for later analysis of good vs bad results to fine-tune search algorithm.
+
 ## Known Issues / Gotchas
 
 - SocialData.tools API has rate limits

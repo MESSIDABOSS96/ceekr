@@ -116,7 +116,7 @@ class AlgorithmV2(SearchAlgorithm):
         )
 
         # Step 1: Intent + seed plan
-        await queue.put("Reading your mind...")
+        await queue.put(json.dumps({"message": "Reading your mind...", "step": "intent_analysis"}))
         plan = await self._plan_search(query)
 
         intent = plan.intent
@@ -142,7 +142,7 @@ class AlgorithmV2(SearchAlgorithm):
             }))
 
         # Step 2: Find seeds (parallel)
-        await queue.put("Casting a wide net...")
+        await queue.put(json.dumps({"message": "Casting a wide net...", "step": "searching"}))
         candidates: dict[str, V2Candidate] = {}  # user_id → candidate
 
         seed_tasks = []
@@ -223,14 +223,14 @@ class AlgorithmV2(SearchAlgorithm):
             self._add_or_merge_user_data(candidates, user_data, source, user_network)
 
         print(f"[v2] {len(candidates)} seed candidates")
-        await queue.put("Spotted some interesting people...")
+        await queue.put(json.dumps({"message": "Spotted some interesting people...", "step": "searching", "counts": {"accounts": len(candidates)}}))
 
         # Score seeds with heuristics and select top seeds
         self._score_candidates(candidates, intent)
         seeds = self._select_seeds(candidates)
         seed_ids = {c.user_id for c in seeds}
 
-        await queue.put("Pulling on a few threads...")
+        await queue.put(json.dumps({"message": "Pulling on a few threads...", "step": "searching"}))
 
         # Step 3: Graph expansion (parallel, starting from seeds)
         expansion_tasks = []
@@ -313,14 +313,14 @@ class AlgorithmV2(SearchAlgorithm):
                         self._add_or_merge_user_data(candidates, user_data, source, user_network)
 
         print(f"[v2] {len(candidates)} total candidates after expansion")
-        await queue.put("The plot thickens...")
+        await queue.put(json.dumps({"message": "The plot thickens...", "step": "searching", "counts": {"accounts": len(candidates)}}))
 
         # Step 4: Timeline enrichment for candidates lacking tweets
         candidates_without_tweets = [
             c for c in candidates.values() if len(c.tweets) == 0
         ]
         if candidates_without_tweets:
-            await queue.put("Reading what they've been saying...")
+            await queue.put(json.dumps({"message": "Reading what they've been saying...", "step": "searching"}))
             # Convert to TwitterAccount objects for enrichment
             accounts_to_enrich = [
                 self._candidate_to_account(c, user_network)
@@ -346,23 +346,23 @@ class AlgorithmV2(SearchAlgorithm):
             print(f"[v2] enriched {enriched_count} candidates with timelines")
 
         # Step 5: Pre-filter
-        await queue.put("Separating the wheat from the chaff...")
+        await queue.put(json.dumps({"message": f"Separating the wheat from the chaff...", "step": "filtering", "counts": {"total": len(candidates)}}))
         accounts_list = self._candidates_to_accounts(candidates, user_network)
         filtered, removed = SearchOrchestrator.pre_filter_accounts(accounts_list, intent)
 
         print(f"[v2] {len(filtered)} passed pre-filter ({removed} removed)")
 
         if not filtered:
-            await queue.put("Couldn't find the right people this time")
-            return AlgorithmResult(ranked_accounts=[], quality="weak")
+            await queue.put(json.dumps({"message": "Couldn't find the right people this time", "step": "filtering_done", "counts": {"passed": 0}}))
+            return AlgorithmResult(ranked_accounts=[], quality="weak", intent=intent)
 
-        await queue.put("Getting warmer...")
+        await queue.put(json.dumps({"message": f"Getting warmer...", "step": "filtering_done", "counts": {"passed": len(filtered)}}))
 
         # Step 5: Heuristic scoring (update candidates with new data)
         self._score_candidates(candidates, intent)
 
         # Step 7: LLM ranking
-        await queue.put("Picking the best of the bunch...")
+        await queue.put(json.dumps({"message": f"Picking the best of the bunch...", "step": "ranking", "counts": {"accounts": len(filtered)}}))
 
         # Build discovery sources summary
         source_counts: dict[str, int] = {}
@@ -399,7 +399,7 @@ class AlgorithmV2(SearchAlgorithm):
 
         # Step 10: Fallback if too few results
         if len(ranked) < _MIN_RESULTS_BEFORE_FALLBACK and quality == "weak":
-            await queue.put("Casting a wider net...")
+            await queue.put(json.dumps({"message": "Casting a wider net...", "step": "fallback"}))
             fallback_ranked = await self._run_fallback(
                 intent, twitter, orchestrator, candidates, seeds, user_network, queue,
             )
@@ -423,13 +423,14 @@ class AlgorithmV2(SearchAlgorithm):
 
         if not ranked:
             print("[v2] 0 final results, quality=weak")
-            return AlgorithmResult(ranked_accounts=[], quality="weak")
+            return AlgorithmResult(ranked_accounts=[], quality="weak", intent=intent)
 
         print(f"[v2] {len(ranked)} final results, quality={quality}")
         return AlgorithmResult(
             ranked_accounts=ranked,
             quality=quality,
             refinement_questions=[],
+            intent=intent,
         )
 
     # ── Step 1: LLM planning ─────────────────────────────────
@@ -452,6 +453,10 @@ class AlgorithmV2(SearchAlgorithm):
                         "anti_signals": {"type": "array", "items": {"type": "string"}},
                         "bio_search_terms": {"type": "array", "items": {"type": "string"}},
                         "mandatory_terms": {"type": "array", "items": {"type": "string"}},
+                        "time_constraint": {
+                            "type": ["string", "null"],
+                            "description": "ISO date YYYY-MM-DD for earliest relevant date, or null if no time constraint",
+                        },
                         "seed_queries": {
                             "type": "array",
                             "items": {
@@ -514,6 +519,8 @@ class AlgorithmV2(SearchAlgorithm):
             if block.type == "tool_use":
                 r = block.input
 
+                time_constraint = r.get("time_constraint") or None
+
                 intent = SearchIntent(
                     persona=r.get("persona", ""),
                     topic=r.get("topic", ""),
@@ -524,7 +531,16 @@ class AlgorithmV2(SearchAlgorithm):
                     key_signals=r.get("key_signals", []),
                     anti_signals=r.get("anti_signals", []),
                     mandatory_terms=r.get("mandatory_terms", []),
+                    time_constraint=time_constraint,
                 )
+
+                # Safety net: if time_constraint is set, ensure seed queries have since:
+                seed_queries_raw = r.get("seed_queries", [])
+                if time_constraint:
+                    since_op = f"since:{time_constraint}"
+                    for sq in seed_queries_raw:
+                        if "since:" not in sq.get("query", ""):
+                            sq["query"] = f"{sq['query']} {since_op}"
 
                 return V2SearchPlan(
                     intent=intent,

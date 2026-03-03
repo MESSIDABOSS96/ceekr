@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
-from core.models import RankedAccount
+from core.models import RankedAccount, SearchIntent
 
 if TYPE_CHECKING:
     from core.auth import UserNetwork
@@ -21,6 +21,7 @@ class AlgorithmResult:
     ranked_accounts: list[RankedAccount] = field(default_factory=list)
     quality: str = "moderate"  # "strong", "moderate", or "weak"
     refinement_questions: list[str] = field(default_factory=list)
+    intent: Optional[SearchIntent] = None
 
 
 class SearchAlgorithm(ABC):

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useCallback, useState } from "react";
-import { Search, Square } from "lucide-react";
+import { Search, Square, Loader2 } from "lucide-react";
 
 interface SearchBoxProps {
   value: string;
@@ -11,6 +11,7 @@ interface SearchBoxProps {
   placeholder?: string;
   disabled?: boolean;
   searching?: boolean;
+  loading?: boolean;
 }
 
 export function SearchBox({
@@ -21,6 +22,7 @@ export function SearchBox({
   placeholder = "Describe who you're looking for...",
   disabled = false,
   searching = false,
+  loading = false,
 }: SearchBoxProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [focused, setFocused] = useState(false);
@@ -59,6 +61,8 @@ export function SearchBox({
           >
             <Square className="h-3.5 w-3.5 fill-text-muted text-text-muted" />
           </button>
+        ) : loading ? (
+          <Loader2 className="absolute right-5 h-5 w-5 text-text-muted/60 pointer-events-none animate-spin" />
         ) : (
           <Search className="absolute right-5 h-5 w-5 text-text-muted/60 pointer-events-none" />
         )}

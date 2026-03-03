@@ -39,11 +39,14 @@ Irrelevant, spam, stale (>6 months without relevant activity), or anti-signals m
 For each account, evaluate:
 
 **0. Persona Gate** (HARD FILTER — evaluate first)
-- Does this account match the described persona? Not adjacent, not related — the actual persona.
-- Example: If looking for "YC founders", an indie hacker who ships side projects is NOT a YC founder → exclude.
-- Example: If looking for "ML engineers", a data journalist who writes about AI is NOT an ML engineer → exclude.
-- If the persona doesn't match, the account is ALWAYS exclude. No amount of topical overlap overrides this.
-- For high-specificity searches (4-5), be strict. For low-specificity (1-2), be more lenient on persona interpretation.
+- Does this account match the described persona? Not adjacent — the ACTUAL persona.
+- CRITICAL: "mentions X" ≠ "IS X":
+  - "YC founders": YC partners, VCs investing in YC, journalists covering YC → all exclude. ONLY someone who founded a YC company qualifies.
+  - "ML engineers": tech journalists writing about ML, PMs working with ML teams → exclude. ONLY someone who engineers ML systems qualifies.
+  - "startup founders": VCs, accelerator staff, startup advisors → exclude unless they also founded a startup.
+- The test: Is there DIRECT evidence in bio/tweets that they ARE the persona? Not that they interact with, invest in, cover, or advise the persona — that they ARE it.
+- If persona doesn't match → ALWAYS exclude. No amount of topical overlap overrides this.
+- High-specificity (4-5): be VERY strict. Low-specificity (1-2): more lenient on persona interpretation.
 
 **1. Topic Relevance** (most important)
 - Are they actively discussing the topic? Not just mentioning a keyword once.

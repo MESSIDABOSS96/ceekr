@@ -34,6 +34,7 @@ from .models import (
 )
 from prompts.ranking import format_ranking_prompt
 from prompts.chat import format_chat_system_prompt
+from prompts.intent_check import INTENT_CHECK_TOOL, format_intent_check_prompt
 from prompts.search_plan import format_search_plan_prompt, format_fallback_prompt
 from prompts.axis_discovery import (
     AXIS_DISCOVERY_TOOL,
@@ -43,11 +44,24 @@ from prompts.journal_generation import (
     JOURNAL_GENERATION_TOOL,
     format_journal_generation_prompt,
 )
+from prompts.combined_grouping import (
+    COMBINED_GROUPING_TOOL,
+    format_combined_grouping_prompt,
+)
+from prompts.workspace_chat import (
+    WORKSPACE_CHAT_TOOLS,
+    format_workspace_chat_prompt,
+    build_journals_context,
+)
 
 
 def validate_query(q: str) -> str:
     """Repair queries that would return zero results on Twitter."""
     original = q
+    # Extract and preserve date operators (since:/until:) before simplification
+    date_ops = re.findall(r'\b(?:since|until):\d{4}-\d{2}-\d{2}\b', q)
+    for op in date_ops:
+        q = q.replace(op, "").strip()
     # Remove parentheses
     q = q.replace("(", "").replace(")", "")
     # Remove extra OR operators (keep at most 1)
@@ -68,6 +82,9 @@ def validate_query(q: str) -> str:
         extra_words = [w for w in extra_words if w not in quoted[0]]
         q = quoted[0] + (" " + extra_words[0] if extra_words else "")
     q = q.strip()
+    # Re-append preserved date operators
+    if date_ops:
+        q = q + " " + " ".join(date_ops)
     if q != original:
         print(f"[validate_query] Repaired: {original!r} → {q!r}")
     return q
@@ -80,6 +97,53 @@ class LLMClient:
         self.client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         self.model = ANTHROPIC_MODEL
         self.fast_model = ANTHROPIC_FAST_MODEL
+
+    async def extract_intent(self, query: str) -> dict:
+        """
+        Fast intent check using Haiku. Returns intent + clarification questions.
+
+        Returns dict with: persona, topic, goal, specificity, needs_clarification,
+        clarification_questions (list of {question, options}).
+        """
+        prompt = format_intent_check_prompt(query)
+
+        response = await self.client.messages.create(
+            model=self.fast_model,
+            max_tokens=1024,
+            tools=[INTENT_CHECK_TOOL],
+            tool_choice={"type": "tool", "name": "check_intent"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        for block in response.content:
+            if block.type == "tool_use":
+                result = block.input
+                specificity = result.get("specificity", 3)
+                raw_questions = result.get("clarification_questions", [])
+                # Normalize: if LLM returns old `options` format, join into placeholder
+                questions = []
+                for q in raw_questions:
+                    if "placeholder" not in q and "options" in q:
+                        q["placeholder"] = ", ".join(q.pop("options"))
+                    questions.append(q)
+
+                return {
+                    "intent": {
+                        "persona": result.get("persona", ""),
+                        "topic": result.get("topic", ""),
+                        "goal": result.get("goal", ""),
+                        "specificity": specificity,
+                    },
+                    "needs_clarification": specificity < 4,
+                    "clarification_questions": questions if specificity < 4 else [],
+                }
+
+        # Fallback — assume needs clarification
+        return {
+            "intent": {"persona": "", "topic": "", "goal": "", "specificity": 2},
+            "needs_clarification": True,
+            "clarification_questions": [],
+        }
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def plan_search(
@@ -135,6 +199,10 @@ class LLMClient:
                             "description": "0-3 niche-specific terms that MUST appear in results. Empty for broad queries.",
                             "items": {"type": "string"},
                         },
+                        "time_constraint": {
+                            "type": ["string", "null"],
+                            "description": "ISO date YYYY-MM-DD for earliest relevant date, or null if no time constraint",
+                        },
                         "queries": {
                             "type": "array",
                             "description": "3-7 Twitter search queries from different angles (count based on specificity)",
@@ -189,8 +257,10 @@ class LLMClient:
 
                 specificity = result.get("specificity", 3)
                 # Dynamic query count: broad → more queries, specific → fewer
-                specificity_to_count = {1: 7, 2: 6, 3: 5, 4: 4, 5: 3}
+                specificity_to_count = {1: 7, 2: 6, 3: 6, 4: 5, 5: 4}
                 query_count = specificity_to_count.get(specificity, 5)
+
+                time_constraint = result.get("time_constraint") or None
 
                 intent = SearchIntent(
                     persona=result.get("persona", ""),
@@ -202,6 +272,7 @@ class LLMClient:
                     key_signals=result.get("key_signals", []),
                     anti_signals=result.get("anti_signals", []),
                     mandatory_terms=result.get("mandatory_terms", []),
+                    time_constraint=time_constraint,
                 )
 
                 queries = [
@@ -217,6 +288,18 @@ class LLMClient:
                 queries = queries[:max(query_count, MAX_QUERIES)]
                 if len(queries) < MIN_QUERIES:
                     print(f"[queries] LLM returned {len(queries)}, expected {query_count}")
+
+                # Safety net: if time_constraint is set, ensure every query has since:
+                if intent.time_constraint:
+                    since_op = f"since:{intent.time_constraint}"
+                    for i, q in enumerate(queries):
+                        if "since:" not in q.query:
+                            queries[i] = SearchQuery(
+                                query=f"{q.query} {since_op}",
+                                rationale=q.rationale,
+                                angle=q.angle,
+                            )
+                            print(f"[time_constraint] Appended {since_op} to query: {q.query}")
 
                 return intent, queries
 
@@ -897,7 +980,7 @@ The following accounts have already been evaluated in a previous batch. Use them
         else:
             return "", []
 
-        # Post-LLM validation: ensure every handle appears in exactly one journal
+        # Post-LLM validation: deduplicate handles across journals
         all_handles = {ra.account.handle.lower() for ra in ranked_accounts}
         seen: set[str] = set()
 
@@ -910,15 +993,192 @@ The following accounts have already been evaluated in a previous batch. Use them
                     unique_handles.append(h_lower)
             journal["handles"] = unique_handles
 
-        # Assign unplaced handles to the largest journal
+        # Only force-assign unplaced handles if >30% are missing (likely LLM error)
         unplaced = all_handles - seen
-        if unplaced and journals:
+        if unplaced and journals and len(unplaced) > len(all_handles) * 0.3:
+            print(f"[grouping] {len(unplaced)}/{len(all_handles)} unplaced (>30%) — force-assigning")
             largest = max(journals, key=lambda j: len(j.get("handles", [])))
             largest["handles"].extend(sorted(unplaced))
-            # Add notes for unplaced handles
             notes = largest.get("journal_notes", {})
             for h in unplaced:
                 notes[h] = "Auto-assigned"
             largest["journal_notes"] = notes
+        elif unplaced:
+            print(f"[grouping] {len(unplaced)}/{len(all_handles)} unplaced — treating as intentional omission")
 
         return summary, journals
+
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def discover_and_generate_journals(
+        self,
+        intent: SearchIntent,
+        ranked_accounts: list[RankedAccount],
+    ) -> tuple[list[dict], str, str, str, list[dict]]:
+        """
+        Combined axis discovery + journal generation in a single LLM call.
+
+        Returns (axes, recommended_key, recommendation_reason, summary, journals).
+        """
+        enriched = self._build_enriched_summaries(ranked_accounts)
+        prompt = format_combined_grouping_prompt(intent, enriched)
+
+        response = await self.client.messages.create(
+            model=self.fast_model,
+            max_tokens=4096,
+            tools=[COMBINED_GROUPING_TOOL],
+            tool_choice={"type": "tool", "name": "group_results"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        axes = []
+        recommended_key = ""
+        recommendation_reason = ""
+        summary = ""
+        journals: list[dict] = []
+
+        for block in response.content:
+            if block.type == "tool_use":
+                result = block.input
+                axes = result.get("axes", [])
+                recommended_key = result.get("recommended_axis_key", "")
+                recommendation_reason = result.get("recommendation_reason", "")
+                summary = result.get("summary", "")
+                journals = result.get("journals", [])
+                break
+
+        # Post-LLM validation: deduplicate handles across journals
+        all_handles = {ra.account.handle.lower() for ra in ranked_accounts}
+        seen: set[str] = set()
+
+        for journal in journals:
+            unique_handles = []
+            for h in journal.get("handles", []):
+                h_lower = h.lower().lstrip("@")
+                if h_lower not in seen:
+                    seen.add(h_lower)
+                    unique_handles.append(h_lower)
+            journal["handles"] = unique_handles
+
+        # Only force-assign unplaced handles if >30% are missing (likely LLM error)
+        # Otherwise treat as intentional omission of marginal people
+        unplaced = all_handles - seen
+        if unplaced and journals and len(unplaced) > len(all_handles) * 0.3:
+            print(f"[grouping] {len(unplaced)}/{len(all_handles)} unplaced (>30%) — force-assigning")
+            largest = max(journals, key=lambda j: len(j.get("handles", [])))
+            largest["handles"].extend(sorted(unplaced))
+            notes = largest.get("journal_notes", {})
+            for h in unplaced:
+                notes[h] = "Auto-assigned"
+            largest["journal_notes"] = notes
+        elif unplaced:
+            print(f"[grouping] {len(unplaced)}/{len(all_handles)} unplaced — treating as intentional omission")
+
+        return axes, recommended_key, recommendation_reason, summary, journals
+
+    async def workspace_chat_respond(
+        self,
+        messages: list[dict],
+        workspace_context: dict,
+        active_journal_id: Optional[str] = None,
+        active_journal_people: Optional[list[dict]] = None,
+    ):
+        """
+        Streaming workspace chat response with tool use.
+
+        Yields dicts: {"type": "token", "text": "..."} or {"type": "tool", "name": ..., "input": ...}
+
+        workspace_context keys: query, total_people, quality, summary, journals
+        """
+        journals_context = build_journals_context(
+            workspace_context["journals"],
+            active_journal_id,
+            active_journal_people,
+        )
+        system_prompt = format_workspace_chat_prompt(
+            query=workspace_context["query"],
+            total_people=workspace_context["total_people"],
+            quality=workspace_context["quality"],
+            summary=workspace_context["summary"],
+            journals_context=journals_context,
+        )
+
+        # Convert messages to Anthropic format
+        api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+
+        async with self.client.messages.stream(
+            model=self.model,
+            max_tokens=1024,
+            system=system_prompt,
+            tools=WORKSPACE_CHAT_TOOLS,
+            messages=api_messages,
+        ) as stream:
+            async for event in stream:
+                if event.type == "content_block_delta":
+                    if hasattr(event.delta, "text"):
+                        yield {"type": "token", "text": event.delta.text}
+
+            # Extract final message for tool use (must be inside async with)
+            response = await stream.get_final_message()
+
+        for block in response.content:
+            if block.type == "tool_use":
+                yield {"type": "tool", "name": block.name, "input": block.input}
+                return
+
+    async def generate_targeted_queries(
+        self,
+        search_description: str,
+        existing_handles: list[str],
+    ) -> list[SearchQuery]:
+        """Generate 1-2 focused search queries for targeted workspace search."""
+        existing_str = ", ".join(f"@{h}" for h in existing_handles[:20])
+        prompt = f"""Generate 1-2 focused Twitter search queries to find: {search_description}
+
+These people are already in the workspace (don't find them again): {existing_str}
+
+Return short, focused queries that will find NEW people matching this description.
+Each query should use a different angle."""
+
+        tools = [{
+            "name": "targeted_queries",
+            "description": "Generate targeted search queries",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "queries": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string"},
+                                "rationale": {"type": "string"},
+                                "angle": {"type": "string"},
+                            },
+                            "required": ["query", "rationale", "angle"],
+                        },
+                    },
+                },
+                "required": ["queries"],
+            },
+        }]
+
+        response = await self.client.messages.create(
+            model=self.fast_model,
+            max_tokens=512,
+            tools=tools,
+            tool_choice={"type": "tool", "name": "targeted_queries"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        for block in response.content:
+            if block.type == "tool_use":
+                return [
+                    SearchQuery(
+                        query=q["query"],
+                        rationale=q["rationale"],
+                        angle=q["angle"],
+                    )
+                    for q in block.input.get("queries", [])[:2]
+                ]
+
+        return []

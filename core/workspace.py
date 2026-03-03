@@ -276,18 +276,39 @@ class WorkspaceOrchestrator:
 
         llm = LLMClient()
 
-        # Extract intent
-        await queue.put("Organizing results into groups...")
-        intent = SearchIntent(persona=query, topic=query, goal="find relevant people")
-        try:
-            intent, _ = await llm.plan_search(query, None)
-        except Exception:
-            pass
+        # Reuse intent from algorithm (avoids redundant LLM call)
+        await queue.put(json.dumps({"message": "Organizing results into groups...", "step": "grouping"}))
+        intent = result.intent or SearchIntent(persona=query, topic=query, goal="find relevant people")
 
-        # Discover axes
-        await queue.put("Finding best grouping angles...")
-        axes_raw, recommended_key, recommendation_reason = await llm.discover_axes(
-            intent, result.ranked_accounts
+        # For high-specificity searches, only group top/strong matches
+        accounts_for_grouping = result.ranked_accounts
+        if intent.specificity >= 4:
+            high_quality = [ra for ra in result.ranked_accounts if ra.bucket in ("top_match", "strong_match")]
+            if high_quality:
+                accounts_for_grouping = high_quality
+                print(f"[grouping] Specificity {intent.specificity}: using {len(high_quality)}/{len(result.ranked_accounts)} top/strong matches for grouping")
+
+        # Enforce mandatory_terms on grouping input for high-specificity searches
+        if intent.specificity >= 4 and intent.mandatory_terms:
+            terms_lower = [t.lower() for t in intent.mandatory_terms]
+            before = len(accounts_for_grouping)
+            filtered_for_grouping = []
+            for ra in accounts_for_grouping:
+                text = f"{ra.account.name} {ra.account.handle} {ra.account.bio or ''}"
+                for t in ra.account.recent_tweets:
+                    text += f" {t.text}"
+                text = text.lower()
+                if any(t in text for t in terms_lower):
+                    filtered_for_grouping.append(ra)
+            if filtered_for_grouping:
+                accounts_for_grouping = filtered_for_grouping
+                if before != len(accounts_for_grouping):
+                    print(f"[grouping mandatory_enforce] {before} → {len(accounts_for_grouping)}")
+
+        # Combined axis discovery + journal generation (single LLM call)
+        await queue.put(json.dumps({"message": "Finding best grouping angles...", "step": "grouping"}))
+        axes_raw, recommended_key, recommendation_reason, summary, raw_journals = (
+            await llm.discover_and_generate_journals(intent, accounts_for_grouping)
         )
 
         # Build axis objects with IDs
@@ -310,21 +331,6 @@ class WorkspaceOrchestrator:
 
         # Store axes
         await self.db.create_axes_batch(workspace_id, axes_with_ids)
-
-        # Find the recommended axis for journal generation
-        chosen_axis = next((a for a in axes_with_ids if a["id"] == recommended_axis_id), axes_with_ids[0] if axes_with_ids else None)
-
-        if not chosen_axis:
-            # Fallback: generate without axis constraint (shouldn't happen)
-            summary, raw_journals = await llm.generate_journals(
-                intent, result.ranked_accounts, "By relevance", []
-            )
-        else:
-            await queue.put(f"Grouping by {chosen_axis['axis_label'].lower()}...")
-            summary, raw_journals = await llm.generate_journals(
-                intent, result.ranked_accounts,
-                chosen_axis["axis_label"], chosen_axis["example_groups"],
-            )
 
         # Persist journals
         journal_dicts = await _store_journals(
@@ -440,3 +446,77 @@ class WorkspaceOrchestrator:
             "summary": summary,
             "journals": journal_dicts,
         }
+
+    async def run_targeted_search(
+        self,
+        workspace_id: str,
+        search_description: str,
+    ) -> list[dict]:
+        """
+        Lightweight targeted search: generate 1-2 queries, search Twitter,
+        dedupe against existing workspace people, rank, and merge results.
+
+        Returns list of serialized new RankedAccount dicts.
+        """
+        from core.twitter import TwitterClient
+
+        # Load existing workspace people to dedupe
+        existing_people = await self.db.get_all_workspace_people(workspace_id)
+        existing_handles = {p["handle"].lower() for p in existing_people}
+        existing_user_ids = {p["user_id"] for p in existing_people}
+
+        # Load workspace intent
+        ws = await self.db.get_workspace(workspace_id)
+        intent = SearchIntent(persona=ws["query"], topic=ws["query"], goal="find relevant people")
+        if ws.get("intent_json"):
+            import json
+            intent_data = json.loads(ws["intent_json"])
+            intent = SearchIntent(**intent_data)
+
+        llm = LLMClient()
+        twitter = TwitterClient()
+        await twitter.initialize()
+
+        # Step 1: Generate 1-2 targeted queries
+        queries = await llm.generate_targeted_queries(
+            search_description, list(existing_handles)[:20]
+        )
+        if not queries:
+            return []
+
+        # Step 2: Execute Twitter searches
+        from config import TWEETS_PER_QUERY
+        all_accounts = {}
+        for sq in queries:
+            try:
+                accounts = await twitter.search_tweets(
+                    sq.query, max_results=TWEETS_PER_QUERY, search_type="Top"
+                )
+                for acc in accounts:
+                    # Dedupe against existing workspace + within this search
+                    if acc.user_id not in existing_user_ids and acc.handle.lower() not in existing_handles:
+                        if acc.user_id not in all_accounts:
+                            all_accounts[acc.user_id] = acc
+                            acc.matched_queries = [sq.query]
+                        else:
+                            all_accounts[acc.user_id].matched_queries.append(sq.query)
+            except Exception as e:
+                print(f"[targeted_search] Query failed: {sq.query}: {e}")
+
+        if not all_accounts:
+            return []
+
+        accounts_list = list(all_accounts.values())
+
+        # Step 3: Fast rank with Haiku (single batch, small set)
+        ranking_response = await llm.rank_accounts(intent, accounts_list)
+        new_ranked = ranking_response.ranked_accounts
+
+        if not new_ranked:
+            return []
+
+        # Step 4: Store new people in workspace
+        serialized = [_serialize_account(ra) for ra in new_ranked]
+        await self.db.store_people_batch(workspace_id, serialized)
+
+        return serialized

@@ -259,6 +259,24 @@ async def chat(request: Request):
         return {"response": f"Sorry, something went wrong: {e}", "action": None}
 
 
+@app.post("/api/intent")
+async def check_intent(request: Request):
+    """Fast intent check — returns intent + clarification questions if query is vague."""
+    body = await request.json()
+    query = body.get("query", "").strip()
+
+    if not query:
+        raise HTTPException(status_code=400, detail="Query is required")
+
+    try:
+        llm = LLMClient()
+        result = await llm.extract_intent(query)
+        return result
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/search")
 async def search(request: Request):
     # Auth is optional — enables network matching when logged in
@@ -328,6 +346,9 @@ async def search(request: Request):
                             elif event_type == "queries":
                                 yield {"event": "queries", "data": json.dumps(parsed["queries"])}
                                 continue
+                            if "message" in parsed:
+                                yield {"event": "progress", "data": json.dumps(parsed)}
+                                continue
                         except (json.JSONDecodeError, KeyError):
                             pass
                     yield {"event": "progress", "data": json.dumps({"message": msg})}
@@ -346,6 +367,9 @@ async def search(request: Request):
                             continue
                         elif event_type == "queries":
                             yield {"event": "queries", "data": json.dumps(parsed["queries"])}
+                            continue
+                        if "message" in parsed:
+                            yield {"event": "progress", "data": json.dumps(parsed)}
                             continue
                     except (json.JSONDecodeError, KeyError):
                         pass
@@ -419,6 +443,9 @@ async def create_workspace(request: Request):
                             elif event_type == "queries":
                                 yield {"event": "queries", "data": json.dumps(parsed["queries"])}
                                 continue
+                            if "message" in parsed:
+                                yield {"event": "progress", "data": json.dumps(parsed)}
+                                continue
                         except (json.JSONDecodeError, KeyError):
                             pass
                     yield {"event": "progress", "data": json.dumps({"message": msg})}
@@ -437,6 +464,9 @@ async def create_workspace(request: Request):
                             continue
                         elif event_type == "queries":
                             yield {"event": "queries", "data": json.dumps(parsed["queries"])}
+                            continue
+                        if "message" in parsed:
+                            yield {"event": "progress", "data": json.dumps(parsed)}
                             continue
                     except (json.JSONDecodeError, KeyError):
                         pass
@@ -592,6 +622,168 @@ async def delete_workspace(workspace_id: str):
     if not deleted:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return {"ok": True}
+
+
+# ── Workspace Chat endpoints ─────────────────────────────────
+
+
+@app.get("/api/workspace/{workspace_id}/chat")
+async def get_chat_history(workspace_id: str):
+    """Load chat history for a workspace."""
+    db: WorkspaceDB = app.state.db
+    ws = await db.get_workspace(workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    messages = await db.get_chat_history(workspace_id)
+    return {"messages": messages}
+
+
+@app.post("/api/workspace/{workspace_id}/chat")
+async def workspace_chat(workspace_id: str, request: Request):
+    """SSE chat endpoint for workspace agent."""
+    db: WorkspaceDB = app.state.db
+
+    ws = await db.get_workspace(workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    body = await request.json()
+    message = body.get("message", "").strip()
+    active_journal_id = body.get("active_journal_id")
+
+    if not message:
+        async def error_stream():
+            yield {"event": "error", "data": json.dumps({"message": "Message is required"})}
+        return EventSourceResponse(error_stream())
+
+    async def event_stream():
+        try:
+            # Load workspace context
+            journals = await db.get_journals(workspace_id)
+            total_people = await db.get_workspace_people_count(workspace_id)
+
+            journal_dicts = []
+            for j in journals:
+                people_count = await db.get_journal_people_count(j["id"])
+                journal_dicts.append({
+                    "id": j["id"],
+                    "label": j["label"],
+                    "description": j["description"],
+                    "people_count": people_count,
+                })
+
+            # Load active journal people if specified
+            active_journal_people = None
+            if active_journal_id:
+                active_journal_people = await db.get_journal_people(active_journal_id)
+
+            workspace_context = {
+                "query": ws["query"],
+                "total_people": total_people,
+                "quality": ws.get("quality", "moderate"),
+                "summary": ws.get("summary", ""),
+                "journals": journal_dicts,
+            }
+
+            # Load chat history
+            chat_history = await db.get_chat_history(workspace_id)
+            api_messages = [{"role": m["role"], "content": m["content"]} for m in chat_history]
+            api_messages.append({"role": "user", "content": message})
+
+            # Persist user message
+            from uuid import uuid4
+            user_msg_id = uuid4().hex[:12]
+            await db.add_chat_message(user_msg_id, workspace_id, "user", message)
+
+            # Stream LLM response
+            llm = LLMClient()
+            full_text = ""
+            tool_result = None
+
+            async for chunk in llm.workspace_chat_respond(
+                messages=api_messages,
+                workspace_context=workspace_context,
+                active_journal_id=active_journal_id,
+                active_journal_people=active_journal_people,
+            ):
+                if chunk["type"] == "token":
+                    full_text += chunk["text"]
+                    yield {"event": "token", "data": json.dumps({"text": chunk["text"]})}
+                elif chunk["type"] == "tool":
+                    tool_result = chunk
+
+            # Process tool result
+            action_data = None
+            if tool_result:
+                tool_name = tool_result["name"]
+                tool_input = tool_result["input"]
+                response_text = tool_input.get("message", "")
+
+                if tool_name == "respond":
+                    # Pure text response — stream the message as tokens if not already streamed
+                    if not full_text:
+                        yield {"event": "token", "data": json.dumps({"text": response_text})}
+                        full_text = response_text
+
+                elif tool_name == "apply_filters":
+                    action_data = {
+                        "type": "apply_filters",
+                        "filters": tool_input.get("filters", {}),
+                    }
+                    if not full_text:
+                        yield {"event": "token", "data": json.dumps({"text": response_text})}
+                        full_text = response_text
+                    yield {"event": "action", "data": json.dumps(action_data)}
+
+                elif tool_name == "remove_profiles":
+                    action_data = {
+                        "type": "remove_profiles",
+                        "handles": tool_input.get("handles", []),
+                    }
+                    if not full_text:
+                        yield {"event": "token", "data": json.dumps({"text": response_text})}
+                        full_text = response_text
+                    yield {"event": "action", "data": json.dumps(action_data)}
+
+                elif tool_name == "run_targeted_search":
+                    if not full_text:
+                        yield {"event": "token", "data": json.dumps({"text": response_text})}
+                        full_text = response_text
+
+                    # Execute mini search pipeline
+                    orchestrator = WorkspaceOrchestrator(db)
+                    new_results = await orchestrator.run_targeted_search(
+                        workspace_id, tool_input.get("search_description", "")
+                    )
+                    action_data = {
+                        "type": "run_targeted_search",
+                        "newResults": new_results,
+                    }
+                    yield {"event": "action", "data": json.dumps(action_data)}
+
+                elif tool_name == "regroup_journals":
+                    if not full_text:
+                        yield {"event": "token", "data": json.dumps({"text": response_text})}
+                        full_text = response_text
+                    action_data = {
+                        "type": "regroup_journals",
+                        "new_axis_description": tool_input.get("new_axis_description", ""),
+                    }
+                    yield {"event": "action", "data": json.dumps(action_data)}
+
+            # Persist assistant message
+            assistant_msg_id = uuid4().hex[:12]
+            await db.add_chat_message(
+                assistant_msg_id, workspace_id, "assistant", full_text, action=action_data
+            )
+
+            yield {"event": "done", "data": json.dumps({})}
+
+        except Exception as e:
+            traceback.print_exc()
+            yield {"event": "error", "data": json.dumps({"message": str(e)})}
+
+    return EventSourceResponse(event_stream(), ping=15)
 
 
 if __name__ == "__main__":

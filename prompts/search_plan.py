@@ -1,8 +1,11 @@
 """Combined prompt for intent analysis + query generation in a single LLM call."""
 
+from datetime import date
 from typing import Optional
 
 SEARCH_PLAN_PROMPT = """Analyze this search request and create a complete search plan: both understanding the intent AND generating Twitter search queries.
+
+Today's date: {today}
 
 ## User's Request
 Who they want to find: {who}
@@ -23,9 +26,11 @@ Examples:
 - If looking for "founders doing customer discovery": ["describes doing user interviews", "mentions pivoting based on feedback", "discusses problem-solution fit", "bio says founder/CEO/building", "shares learnings from talking to customers"]
 
 **anti_signals**: 2-3 things that indicate this is NOT the right person.
+IMPORTANT: Always include at least one signal for "adjacent but wrong persona" — people who interact with the target world but aren't the target persona themselves.
 Examples:
+- If looking for "YC founders": ["VC/investor who funds YC companies but didn't found one", "YC partner or staff member", "journalist covering YC startups"]
 - If looking for practitioners: ["only retweets news articles without commentary", "bio is purely promotional/marketing", "tweets are all job postings or hiring"]
-- If looking for founders: ["works at large corporation in non-founder role", "only shares motivational quotes", "account is a news aggregator or bot"]
+- If looking for founders: ["works at large corporation in non-founder role", "VC or investor (not a founder)", "account is a news aggregator or bot"]
 
 **mandatory_terms**: 0-3 niche-specific terms that are the NON-NEGOTIABLE core of this search.
 
@@ -41,6 +46,17 @@ Examples:
 - "langchain contributors" → ["langchain"]
 - "AI researchers" → []
 - "founders" → []
+
+**time_constraint**: If the user mentions a time frame, convert to an ISO date (YYYY-MM-DD) for the earliest relevant date.
+- "recent" with no qualifier → 6 months back from today
+- "last 6 months" → 6 months back from today
+- "2024" → "2024-01-01"
+- "last year" → beginning of last year
+- No time mention → null
+Examples (assuming today is {today}):
+- "recent YC founders" → 6 months back
+- "people who discussed X in the last 6 months" → 6 months back
+- "AI researchers" (no time mention) → null
 
 **specificity** (1-5): How specific is this request?
 - 1: "people in tech" — too broad to search meaningfully
@@ -59,9 +75,9 @@ Examples:
 Generate a number of queries based on the specificity you determined above:
 - Specificity 1 → 7 queries (broad search needs diverse angles)
 - Specificity 2 → 6 queries
-- Specificity 3 → 5 queries
-- Specificity 4 → 4 queries
-- Specificity 5 → 3 queries (specific search needs fewer, targeted queries)
+- Specificity 3 → 6 queries
+- Specificity 4 → 5 queries
+- Specificity 5 → 4 queries (specific search needs more angles to find niche people)
 
 ### Twitter Search Rules (CRITICAL - read carefully)
 Twitter search is very restrictive. Complex queries return ZERO results. Follow these rules strictly:
@@ -101,6 +117,7 @@ Each query should:
 - Target a different angle/phrasing to maximize coverage
 - NEVER use parentheses, NEVER combine more than 3 total terms
 - Avoid common spam triggers (giveaway, follow4follow, etc.)
+- If time_constraint is set, append `since:YYYY-MM-DD` to EVERY query. The `since:` operator doesn't count toward the complexity limit. Example: `"YC founder" startup since:2025-09-01`
 
 Remember: if the topic contains specific niche terms (e.g., "openclaw", "customer discovery"), every query MUST include at least one of those specific terms. Never generate queries that only use the generic category (e.g., just "researchers" without "openclaw"). However, if the topic is inherently broad (e.g., "AI researchers", "founders"), broad queries are fine. A separate ranking step will filter for relevance, but it cannot fix queries that are too broad to begin with.
 
@@ -133,7 +150,7 @@ Use the fallback_queries tool to respond."""
 def format_search_plan_prompt(who: str, why: Optional[str] = None) -> str:
     """Format the combined search plan prompt with user input."""
     why_section = f"Why (context): {why}" if why else "Why (context): Not provided"
-    return SEARCH_PLAN_PROMPT.format(who=who, why_section=why_section)
+    return SEARCH_PLAN_PROMPT.format(who=who, why_section=why_section, today=date.today().isoformat())
 
 
 def format_fallback_prompt(

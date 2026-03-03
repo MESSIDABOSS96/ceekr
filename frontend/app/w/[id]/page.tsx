@@ -19,27 +19,36 @@ export default function WorkspacePage() {
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
 
   useEffect(() => {
+    let stale = false;
+
+    setLoadState((prev) => {
+      // If we already have a loaded workspace, keep showing it (no flash)
+      if (prev.status === "loaded") return prev;
+      return { status: "loading" };
+    });
+
     fetchWorkspace(params.id)
       .then((data) => {
+        if (stale) return;
         const overlaps = data.overlaps?.length
           ? data.overlaps
           : loadOverlaps(params.id);
         setLoadState({ status: "loaded", data, overlaps });
       })
-      .catch((err) => {
-        if (err.message === "not_found") {
-          setLoadState({ status: "not_found" });
-        } else {
-          setLoadState({ status: "not_found" });
-        }
+      .catch(() => {
+        if (stale) return;
+        setLoadState({ status: "not_found" });
       });
+
+    return () => {
+      stale = true;
+    };
   }, [params.id]);
 
   if (loadState.status === "loading") {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <DotGridBackground />
-        <p className="text-sm text-text-muted animate-pulse">Loading workspace...</p>
       </div>
     );
   }
@@ -67,7 +76,11 @@ export default function WorkspacePage() {
   return (
     <>
       <DotGridBackground magnify={false} />
-      <WorkspaceView initialData={loadState.data} overlaps={loadState.overlaps} />
+      <WorkspaceView
+        key={loadState.data.workspace_id}
+        initialData={loadState.data}
+        overlaps={loadState.overlaps}
+      />
     </>
   );
 }

@@ -48,3 +48,4 @@ frontend/.env.local
 
 # Project specific
 *.log
+ceekr.db*

@@ -67,6 +67,40 @@ export interface SearchResults {
   refinement_questions: string[];
 }
 
+// ── Intent Check / Clarification ─────────────────────────
+
+export interface ClarificationQuestion {
+  question: string;
+  placeholder: string;
+}
+
+export interface IntentCheckResponse {
+  intent: SearchIntent;
+  needs_clarification: boolean;
+  clarification_questions: ClarificationQuestion[];
+}
+
+// ── Activity / Thinking Panel ────────────────────────────
+
+export type ActivityStepType =
+  | "init"
+  | "intent_analysis"
+  | "query_generation"
+  | "searching"
+  | "filtering"
+  | "filtering_done"
+  | "ranking"
+  | "grouping"
+  | "fallback"
+  | "generic";
+
+export interface ActivityStep {
+  message: string;
+  step: ActivityStepType;
+  counts?: Record<string, number>;
+  timestamp: number;
+}
+
 // ── Filters ─────────────────────────────────────────────
 
 export interface Filters {
@@ -123,4 +157,40 @@ export interface WorkspaceData {
 
 export interface JournalPerson extends RankedAccount {
   journal_note: string;
+}
+
+// ── Chat types ──
+
+export interface ChatAction {
+  type: "apply_filters" | "remove_profiles" | "run_targeted_search" | "regroup_journals";
+  filters?: {
+    min_followers?: number;
+    max_followers?: number;
+    bio_keywords?: string[];
+    location?: string;
+  };
+  handles?: string[];
+  search_description?: string;
+  new_axis_description?: string;
+  newResults?: RankedAccount[];
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  action?: ChatAction;
+  created_at: string;
+}
+
+// ── Workspace list (sidebar) ──
+
+export interface WorkspaceSummary {
+  id: string;
+  query: string;
+  status: string;
+  summary: string | null;
+  quality: string | null;
+  created_at: string;
+  updated_at: string;
 }

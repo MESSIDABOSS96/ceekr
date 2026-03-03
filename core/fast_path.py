@@ -455,7 +455,7 @@ def merge_ranked_results(
     for r in llm_results:
         by_user_id[r.account.user_id] = r
 
-    # Fast path results: boost if LLM also found them, or include high-confidence user-search-only
+    # Fast path results: only keep if LLM also evaluated them (no bypass)
     llm_user_ids = set(by_user_id.keys())
     for r in user_search_results:
         uid = r.account.user_id
@@ -465,9 +465,7 @@ def merge_ranked_results(
             if existing.bucket != "exclude" and \
                BUCKET_SORT_ORDER.get(r.bucket, 3) < BUCKET_SORT_ORDER.get(existing.bucket, 3):
                 by_user_id[uid] = r
-        elif r.relevance_score >= 6.0:
-            # High-confidence user-search result not found by LLM pipeline
-            by_user_id[uid] = r
+        # User-search-only results no longer bypass LLM judgment
 
     merged = list(by_user_id.values())
     # Filter out excluded accounts

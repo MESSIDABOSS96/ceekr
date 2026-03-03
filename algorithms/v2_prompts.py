@@ -7,6 +7,8 @@ from core.models import SearchIntent
 
 V2_SEARCH_PLAN_PROMPT = """Analyze this search request and create a seed-based search plan. You need to identify the intent AND plan how to find seed accounts that we can then expand outward from.
 
+Today's date: {today}
+
 ## User's Request
 Who they want to find: {who}
 {why_section}
@@ -21,12 +23,18 @@ Decompose the request into structured fields:
 
 **key_signals**: 3-5 SPECIFIC things to look for in tweets/bios that confirm this person matches.
 **anti_signals**: 2-3 things that indicate this is NOT the right person.
+IMPORTANT: Always include at least one signal for "adjacent but wrong persona" — people who interact with the target world but aren't it.
 
 **mandatory_terms**: 0-3 niche-specific terms that are the NON-NEGOTIABLE core of this search.
 Rules:
 - If the query has a SPECIFIC product/project/technology name → that IS a mandatory term
 - If the query is inherently broad → mandatory_terms = []
 - Use the NICHE SPECIFIER, not the role
+
+**time_constraint**: If the user mentions a time frame, convert to an ISO date (YYYY-MM-DD) for the earliest relevant date.
+- "recent" with no qualifier → 3 months back from today
+- "last 6 months" → 6 months back from today
+- No time mention → null
 
 **specificity** (1-5): How specific is this request?
 
@@ -39,6 +47,7 @@ Generate strategies to find 5-8 high-quality seed accounts:
 **seed_queries**: 3-5 Twitter search queries designed to find the MOST prominent/active people in this space. These should be highly targeted — we want quality seeds, not broad coverage.
 - Use the same Twitter search rules (quoted phrase alone or + 1 keyword)
 - Target people who are clearly central to this topic
+- If time_constraint is set, append `since:YYYY-MM-DD` to EVERY query (doesn't count toward complexity limit)
 
 **seed_accounts**: 0-5 known Twitter handles who are well-known in this space. Only include handles you are CONFIDENT exist and are relevant. Format: just the handle without @.
 
@@ -95,8 +104,13 @@ Irrelevant, spam, stale, or anti-signals match. Do NOT show to the user.
 
 ## Evaluation Criteria
 
-**0. Persona Gate** (HARD FILTER)
-- Does this account match the described persona? If not → exclude.
+**0. Persona Gate** (HARD FILTER — evaluate first)
+- Does this account match the described persona? Not adjacent — the ACTUAL persona.
+- CRITICAL: "mentions X" ≠ "IS X":
+  - "YC founders": YC partners, VCs investing in YC, journalists covering YC → all exclude. ONLY someone who founded a YC company qualifies.
+  - "ML engineers": tech journalists writing about ML, PMs working with ML teams → exclude.
+- The test: Is there DIRECT evidence in bio/tweets that they ARE the persona?
+- If persona doesn't match → ALWAYS exclude.
 
 **1. Topic Relevance** (most important)
 - Active discussion of the topic, not just a keyword mention.
@@ -163,8 +177,9 @@ Use the fallback_queries tool to respond."""
 
 def format_v2_search_plan_prompt(who: str, why: str | None = None) -> str:
     """Format the V2 search plan prompt."""
+    from datetime import date
     why_section = f"Why (context): {why}" if why else "Why (context): Not provided"
-    return V2_SEARCH_PLAN_PROMPT.format(who=who, why_section=why_section)
+    return V2_SEARCH_PLAN_PROMPT.format(who=who, why_section=why_section, today=date.today().isoformat())
 
 
 def format_v2_ranking_prompt(

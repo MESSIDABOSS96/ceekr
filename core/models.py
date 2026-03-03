@@ -70,6 +70,10 @@ class SearchIntent(BaseModel):
         default_factory=list,
         description="0-3 niche-specific terms that MUST appear in results. Empty for broad queries.",
     )
+    time_constraint: Optional[str] = Field(
+        None,
+        description="ISO date YYYY-MM-DD for earliest relevant date, e.g. '2025-09-01'",
+    )
 
 
 class SearchQuery(BaseModel):

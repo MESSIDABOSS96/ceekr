@@ -62,7 +62,7 @@ MAX_BIO_LENGTH = 150  # chars for bio
 FAST_PATH_MAX_RESULTS = 75
 
 # Fallback queries
-MIN_ACCOUNTS_BEFORE_FALLBACK = 15
+MIN_ACCOUNTS_BEFORE_FALLBACK = 25
 
 # Recency scoring
 RECENCY_HALF_LIFE_DAYS = 90        # engagement value halves every N days

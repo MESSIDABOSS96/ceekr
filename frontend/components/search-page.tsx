@@ -2,18 +2,22 @@
 
 import { useReducer, useRef, useCallback, useMemo, useState, useEffect } from "react";
 import { SearchBox } from "@/components/search-box";
-import { ProgressRing } from "@/components/progress-ring";
+import { ThinkingPanel } from "@/components/thinking-panel";
 import { FilterChips } from "@/components/filter-chips";
 import { FilterPanel } from "@/components/filter-panel";
 import { ResultCard } from "@/components/result-card";
-import { streamSearch, streamWorkspace } from "@/lib/api";
+import { ClarificationPanel } from "@/components/clarification-panel";
+import { checkIntent, streamSearch, streamWorkspace } from "@/lib/api";
 import { applyFilters } from "@/lib/filter-utils";
 import { DEFAULT_FILTERS } from "@/lib/types";
 import type {
+  ActivityStep,
+  ActivityStepType,
   SearchQuery,
   RankedAccount,
   Filters,
   WorkspaceData,
+  ClarificationQuestion,
 } from "@/lib/types";
 
 // ── Props ─────────────────────────────────────────────────
@@ -43,13 +47,13 @@ interface SearchPageProps {
 
 // ── State machine ──────────────────────────────────────────
 
-type Phase = "landing" | "searching" | "results";
+type Phase = "landing" | "checking" | "clarifying" | "searching" | "results";
 
 interface State {
   phase: Phase;
   query: string;
   searchedQuery: string;
-  progressMessages: string[];
+  activitySteps: ActivityStep[];
   queries: SearchQuery[];
   results: RankedAccount[];
   quality: "strong" | "moderate" | "weak" | null;
@@ -57,12 +61,16 @@ interface State {
   error: string | null;
   filters: Filters;
   filterPanelOpen: boolean;
+  clarificationQuestions: ClarificationQuestion[];
 }
 
 type Action =
   | { type: "SET_QUERY"; query: string }
+  | { type: "INTENT_CHECK_START" }
+  | { type: "INTENT_RECEIVED"; questions: ClarificationQuestion[] }
+  | { type: "SUBMIT_CLARIFICATION"; enrichedQuery: string }
   | { type: "START_SEARCH" }
-  | { type: "PROGRESS"; message: string }
+  | { type: "PROGRESS"; step: ActivityStep }
   | { type: "QUERIES"; queries: SearchQuery[] }
   | {
       type: "RESULTS";
@@ -79,7 +87,7 @@ const defaultState: State = {
   phase: "landing",
   query: "",
   searchedQuery: "",
-  progressMessages: [],
+  activitySteps: [],
   queries: [],
   results: [],
   quality: null,
@@ -87,6 +95,7 @@ const defaultState: State = {
   error: null,
   filters: { ...DEFAULT_FILTERS },
   filterPanelOpen: false,
+  clarificationQuestions: [],
 };
 
 function buildInitialState(initial?: InitialSearchState): State {
@@ -106,22 +115,50 @@ function reducer(state: State, action: Action): State {
   switch (action.type) {
     case "SET_QUERY":
       return { ...state, query: action.query };
+    case "INTENT_CHECK_START":
+      return {
+        ...state,
+        phase: "checking",
+        searchedQuery: state.query,
+        error: null,
+        clarificationQuestions: [],
+      };
+    case "INTENT_RECEIVED":
+      return {
+        ...state,
+        phase: "clarifying",
+        clarificationQuestions: action.questions,
+      };
+    case "SUBMIT_CLARIFICATION":
+      return {
+        ...state,
+        phase: "searching",
+        searchedQuery: action.enrichedQuery,
+        activitySteps: [],
+        queries: [],
+        results: [],
+        quality: null,
+        refinementQuestions: [],
+        clarificationQuestions: [],
+        error: null,
+      };
     case "START_SEARCH":
       return {
         ...state,
         phase: "searching",
         searchedQuery: state.query,
-        progressMessages: [],
+        activitySteps: [],
         queries: [],
         results: [],
         quality: null,
         refinementQuestions: [],
+        clarificationQuestions: [],
         error: null,
       };
     case "PROGRESS":
       return {
         ...state,
-        progressMessages: [...state.progressMessages, action.message],
+        activitySteps: [...state.activitySteps, action.step],
       };
     case "QUERIES":
       return { ...state, queries: action.queries };
@@ -152,19 +189,46 @@ function reducer(state: State, action: Action): State {
 
 // ── Progress helper ───────────────────────────────────────
 
+const STEP_PROGRESS: Record<ActivityStepType, number> = {
+  init: 5,
+  intent_analysis: 15,
+  query_generation: 25,
+  searching: 45,
+  filtering: 65,
+  filtering_done: 75,
+  ranking: 85,
+  grouping: 92,
+  fallback: 55,
+  generic: 0,
+};
+
 function getSearchProgress(state: State): number {
   if (state.phase === "results") return 100;
-  const msg = state.progressMessages[state.progressMessages.length - 1] ?? "";
-  if (msg.startsWith("Picking")) return 85;
-  if (msg.startsWith("Getting warmer")) return 75;
-  if (msg.startsWith("Separating")) return 70;
-  if (msg.includes("wider net")) return 55;
-  if (msg.startsWith("Pulling") || msg.startsWith("The plot")) return 50;
-  if (state.queries.length > 0) return 30;
-  if (msg.startsWith("Reading your mind")) return 15;
-  if (state.progressMessages.length > 0) return 5;
-  return 0;
+  if (state.activitySteps.length === 0) return 0;
+  // Take the max progress across all steps seen (never go backward)
+  let maxProgress = 0;
+  for (const s of state.activitySteps) {
+    const p = STEP_PROGRESS[s.step] ?? 0;
+    if (p > maxProgress) maxProgress = p;
+  }
+  return maxProgress;
 }
+
+// ── Subtitle typewriter ───────────────────────────────────
+
+const SUBTITLE_EXAMPLES = [
+  "ex-Stripe engineers",
+  "solo devs shipping in public",
+  "urban farming advocates",
+  "infra nerds who left FAANG",
+  "indie documentary filmmakers",
+  "AI researchers at non-OpenAI labs",
+];
+
+const TYPE_SPEED = 45;
+const DELETE_SPEED = 25;
+const PAUSE_AFTER_TYPE = 2500;
+const PAUSE_AFTER_DELETE = 400;
 
 // ── Component ─────────────────────────────────────────────
 
@@ -174,16 +238,43 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
   const queriesRef = useRef<SearchQuery[]>([]);
 
   // Landing page typing animation
-  const SUBHEADER = "Find anyone on ";
+  const SUBHEADER_PREFIX = "Find ";
   const [titleCharIndex, setTitleCharIndex] = useState(5);
-  const [subCharIndex, setSubCharIndex] = useState(SUBHEADER.length);
+  const [subCharIndex, setSubCharIndex] = useState(SUBHEADER_PREFIX.length);
   const hasAnimatedRef = useRef(false);
+
+  // Subtitle typewriter state
+  const [rotatingText, setRotatingText] = useState("");
+  const rotatingIndexRef = useRef(0);
+  const rotatingPhaseRef = useRef<"typing" | "pausing" | "deleting" | "gap">("typing");
+  const rotatingCharRef = useRef(0);
+  const introComplete = subCharIndex >= SUBHEADER_PREFIX.length;
+
+  // Static "anyone" typewriter when leaving landing
+  const STATIC_TEXT = "anyone";
+  const [staticSubtitle, setStaticSubtitle] = useState("");
+  const isLanding = state.phase === "landing";
+
+  useEffect(() => {
+    if (isLanding) {
+      setStaticSubtitle("");
+      return;
+    }
+    let i = 0;
+    setStaticSubtitle("");
+    const timer = setInterval(() => {
+      i++;
+      setStaticSubtitle(STATIC_TEXT.slice(0, i));
+      if (i >= STATIC_TEXT.length) clearInterval(timer);
+    }, TYPE_SPEED);
+    return () => clearInterval(timer);
+  }, [isLanding]);
 
   useEffect(() => {
     if (state.phase !== "landing") return;
     if (hasAnimatedRef.current) {
       setTitleCharIndex(5);
-      setSubCharIndex(SUBHEADER.length);
+      setSubCharIndex(SUBHEADER_PREFIX.length);
       return;
     }
     hasAnimatedRef.current = true;
@@ -197,12 +288,64 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
     }
 
     const subStart = 700;
-    for (let i = 0; i < SUBHEADER.length; i++) {
+    for (let i = 0; i < SUBHEADER_PREFIX.length; i++) {
       timers.push(setTimeout(() => setSubCharIndex(i + 1), subStart + (i + 1) * 40));
     }
 
     return () => timers.forEach(clearTimeout);
   }, [state.phase]);
+
+  // Rotating typewriter in subtitle
+  useEffect(() => {
+    if (!introComplete || state.phase !== "landing") {
+      setRotatingText("");
+      return;
+    }
+
+    rotatingPhaseRef.current = "typing";
+    rotatingCharRef.current = 0;
+    rotatingIndexRef.current = 0;
+    setRotatingText("");
+
+    let timer: ReturnType<typeof setTimeout>;
+
+    function tick() {
+      const example = SUBTITLE_EXAMPLES[rotatingIndexRef.current];
+      const phase = rotatingPhaseRef.current;
+
+      if (phase === "typing") {
+        rotatingCharRef.current++;
+        setRotatingText(example.slice(0, rotatingCharRef.current));
+        if (rotatingCharRef.current >= example.length) {
+          rotatingPhaseRef.current = "pausing";
+          timer = setTimeout(tick, PAUSE_AFTER_TYPE);
+        } else {
+          timer = setTimeout(tick, TYPE_SPEED);
+        }
+      } else if (phase === "pausing") {
+        rotatingPhaseRef.current = "deleting";
+        timer = setTimeout(tick, DELETE_SPEED);
+      } else if (phase === "deleting") {
+        rotatingCharRef.current--;
+        setRotatingText(example.slice(0, rotatingCharRef.current));
+        if (rotatingCharRef.current <= 0) {
+          rotatingPhaseRef.current = "gap";
+          timer = setTimeout(tick, PAUSE_AFTER_DELETE);
+        } else {
+          timer = setTimeout(tick, DELETE_SPEED);
+        }
+      } else if (phase === "gap") {
+        rotatingIndexRef.current =
+          (rotatingIndexRef.current + 1) % SUBTITLE_EXAMPLES.length;
+        rotatingCharRef.current = 0;
+        rotatingPhaseRef.current = "typing";
+        timer = setTimeout(tick, TYPE_SPEED);
+      }
+    }
+
+    timer = setTimeout(tick, 300);
+    return () => clearTimeout(timer);
+  }, [introComplete, state.phase]);
 
   const filteredResults = useMemo(
     () => applyFilters(state.results, state.filters),
@@ -217,10 +360,17 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
       const controller = new AbortController();
       abortRef.current = controller;
 
-      dispatch({ type: "SET_QUERY", query: queryText });
       dispatch({ type: "START_SEARCH" });
 
-      const progressCb = (message: string) => dispatch({ type: "PROGRESS", message });
+      const progressCb = (data: Record<string, unknown>) => {
+        const step: ActivityStep = {
+          message: (data.message as string) ?? "",
+          step: (data.step as ActivityStepType) ?? "generic",
+          counts: data.counts as Record<string, number> | undefined,
+          timestamp: Date.now(),
+        };
+        dispatch({ type: "PROGRESS", step });
+      };
       const queriesCb = (queries: SearchQuery[]) => {
         queriesRef.current = queries;
         dispatch({ type: "QUERIES", queries });
@@ -275,10 +425,37 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
     [onSearchComplete, onWorkspaceCreated],
   );
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     if (!state.query.trim()) return;
-    doSearch(state.query);
+
+    dispatch({ type: "INTENT_CHECK_START" });
+
+    try {
+      const result = await checkIntent(state.query);
+
+      if (!result.needs_clarification) {
+        // Specific enough — skip clarification, go straight to search
+        doSearch(state.query);
+      } else {
+        // Vague — show clarification panel
+        dispatch({
+          type: "INTENT_RECEIVED",
+          questions: result.clarification_questions,
+        });
+      }
+    } catch {
+      // On error, fall through to search directly
+      doSearch(state.query);
+    }
   }, [state.query, doSearch]);
+
+  const handleClarificationSubmit = useCallback(
+    (enrichedQuery: string) => {
+      dispatch({ type: "SUBMIT_CLARIFICATION", enrichedQuery });
+      doSearch(enrichedQuery);
+    },
+    [doSearch],
+  );
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
@@ -293,7 +470,9 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
   }, [onReset]);
 
   const isSearching = state.phase === "searching";
-  const showCompactHeader = state.phase !== "landing";
+  const isChecking = state.phase === "checking";
+  const isClarifying = state.phase === "clarifying";
+  const showCompactHeader = state.phase === "results";
 
   return (
     <div className="min-h-screen pb-16">
@@ -314,17 +493,16 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
               onChange={(q) => dispatch({ type: "SET_QUERY", query: q })}
               onSubmit={handleSubmit}
               onStop={handleStop}
-              placeholder="Describe who you're looking for..."
-              disabled={isSearching}
+              disabled={isSearching || isChecking}
               searching={isSearching}
+              loading={isChecking}
             />
-            {isSearching && state.progressMessages.length > 0 && (
-              <div className="mt-4 flex items-center justify-center gap-2.5">
-                <p className="text-sm text-text-muted animate-pulse">
-                  {state.progressMessages[state.progressMessages.length - 1]}
-                </p>
-                <ProgressRing percentage={getSearchProgress(state)} size={20} />
-              </div>
+            {(isSearching || state.phase === "results") && state.activitySteps.length > 0 && (
+              <ThinkingPanel
+                steps={state.activitySteps}
+                progress={getSearchProgress(state)}
+                isComplete={state.phase === "results"}
+              />
             )}
             {state.phase === "results" && state.searchedQuery && (
               <p className="mt-4 text-center text-sm text-text-muted">
@@ -334,7 +512,8 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
           </div>
         </div>
       ) : (
-        <div className="flex min-h-[80vh] flex-col items-center justify-center text-center">
+        <div className="flex min-h-[80vh] flex-col items-center text-center">
+          <div className="my-auto flex flex-col items-center w-full">
           <div className="mb-4">
             <h1 className="font-mono-display text-[3rem] sm:text-[4.5rem] font-bold tracking-tight text-text-primary leading-none">
               {"Ceekr".slice(0, titleCharIndex)}
@@ -345,14 +524,30 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
           </div>
 
           <p className="mb-10 text-base sm:text-lg text-text-secondary tracking-wide">
-            {SUBHEADER.slice(0, subCharIndex)}
-            {subCharIndex > 0 && subCharIndex < SUBHEADER.length && (
+            {SUBHEADER_PREFIX.slice(0, subCharIndex)}
+            {subCharIndex > 0 && !introComplete && (
               <span className="animate-cursor ml-0.5 text-text-muted">|</span>
             )}
-            {subCharIndex >= SUBHEADER.length && (
-              <svg viewBox="0 0 24 24" className="inline h-4 w-4 sm:h-5 sm:w-5 fill-text-secondary align-middle -mt-0.5" aria-label="X">
-                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-              </svg>
+            {introComplete && (
+              <>
+                {state.phase === "landing" ? (
+                  <>
+                    <span className="text-text-primary">{rotatingText}</span>
+                    <span className="animate-cursor text-text-muted">|</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-text-primary">{staticSubtitle}</span>
+                    {staticSubtitle.length < STATIC_TEXT.length && (
+                      <span className="animate-cursor text-text-muted">|</span>
+                    )}
+                  </>
+                )}
+                {"on "}
+                <svg viewBox="0 0 24 24" className="inline h-4 w-4 sm:h-5 sm:w-5 fill-text-secondary align-middle -mt-0.5" aria-label="X">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                </svg>
+              </>
             )}
             {subCharIndex === 0 && <span className="opacity-0">.</span>}
           </p>
@@ -363,18 +558,29 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
               onChange={(q) => dispatch({ type: "SET_QUERY", query: q })}
               onSubmit={handleSubmit}
               onStop={handleStop}
-              placeholder="Describe who you're looking for..."
-              disabled={isSearching}
+              disabled={isSearching || isChecking}
               searching={isSearching}
+              loading={isChecking}
             />
-            {isSearching && state.progressMessages.length > 0 && (
-              <div className="mt-4 flex items-center justify-center gap-2.5">
-                <p className="text-sm text-text-muted animate-pulse">
-                  {state.progressMessages[state.progressMessages.length - 1]}
-                </p>
-                <ProgressRing percentage={getSearchProgress(state)} size={20} />
-              </div>
+
+            {/* Clarification panel */}
+            {isClarifying && state.clarificationQuestions.length > 0 && (
+              <ClarificationPanel
+                questions={state.clarificationQuestions}
+                originalQuery={state.searchedQuery}
+                onSubmit={handleClarificationSubmit}
+              />
             )}
+
+            {isSearching && state.activitySteps.length > 0 && (
+              <ThinkingPanel
+                steps={state.activitySteps}
+                progress={getSearchProgress(state)}
+                isComplete={false}
+              />
+            )}
+
+          </div>
           </div>
         </div>
       )}
@@ -414,7 +620,7 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
         <>
           <div
             className="grid gap-4 justify-center"
-            style={{ gridTemplateColumns: "repeat(2, 504px)" }}
+            style={{ gridTemplateColumns: "repeat(auto-fill, minmax(480px, 504px))" }}
           >
             {filteredResults.map((r) => (
               <ResultCard key={r.user_id} account={r} />
