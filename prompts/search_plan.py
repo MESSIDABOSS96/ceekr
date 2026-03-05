@@ -73,11 +73,11 @@ Examples:
 ## Part 2: Generate Twitter Search Queries
 
 Generate a number of queries based on the specificity you determined above:
-- Specificity 1 → 7 queries (broad search needs diverse angles)
-- Specificity 2 → 6 queries
-- Specificity 3 → 6 queries
-- Specificity 4 → 5 queries
-- Specificity 5 → 4 queries (specific search needs more angles to find niche people)
+- Specificity 1 → 10 queries (broad search needs diverse angles)
+- Specificity 2 → 9 queries
+- Specificity 3 → 8 queries
+- Specificity 4 → 6 queries
+- Specificity 5 → 5 queries (specific search needs more angles to find niche people)
 
 ### Twitter Search Rules (CRITICAL - read carefully)
 Twitter search is very restrictive. Complex queries return ZERO results. Follow these rules strictly:

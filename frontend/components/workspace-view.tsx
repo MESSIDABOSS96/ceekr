@@ -1,14 +1,13 @@
 "use client";
 
-import { useReducer, useRef, useEffect, useCallback, useState } from "react";
+import { useReducer, useRef, useEffect, useCallback } from "react";
 import { WorkspaceHeader } from "./workspace-header";
 import { JournalNode } from "./journal-node";
 import { OverlapLines } from "./overlap-lines";
 import { ZoomControls } from "./zoom-controls";
 import { JournalDetailPanel } from "./journal-detail-panel";
-import { AgentPanel } from "./agent-panel";
-import { fetchJournalPeople, fetchWorkspace, updateLayout } from "@/lib/api";
-import type { WorkspaceData, JournalPerson, JournalOverlap, ChatAction } from "@/lib/types";
+import { fetchJournalPeople, updateLayout } from "@/lib/api";
+import type { WorkspaceData, JournalPerson, JournalOverlap } from "@/lib/types";
 
 // ── State ──
 
@@ -21,7 +20,6 @@ interface WorkspaceState {
   openJournalId: string | null;
   openJournalPeople: JournalPerson[] | null;
   journalLoading: boolean;
-  chatOpen: boolean;
 }
 
 type Action =
@@ -31,7 +29,6 @@ type Action =
   | { type: "MOVE_NODE"; journalId: string; x: number; y: number }
   | { type: "SET_ZOOM"; zoom: number }
   | { type: "PAN"; panX: number; panY: number }
-  | { type: "TOGGLE_CHAT" }
   | { type: "UPDATE_DATA"; data: WorkspaceData };
 
 function clamp(value: number, min: number, max: number) {
@@ -72,8 +69,6 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       return { ...state, zoom: clamp(action.zoom, 0.5, 2.5) };
     case "PAN":
       return { ...state, panX: action.panX, panY: action.panY };
-    case "TOGGLE_CHAT":
-      return { ...state, chatOpen: !state.chatOpen };
     case "UPDATE_DATA":
       return { ...state, data: action.data };
     default:
@@ -95,7 +90,6 @@ function buildInitialState(data: WorkspaceData): WorkspaceState {
     openJournalId: null,
     openJournalPeople: null,
     journalLoading: false,
-    chatOpen: false,
   };
 }
 
@@ -273,37 +267,6 @@ export function WorkspaceView({ initialData, overlaps }: WorkspaceViewProps) {
     ? state.data.journals.find((j) => j.id === state.openJournalId) ?? null
     : null;
 
-  // Handle agent chat actions
-  const handleChatAction = useCallback(
-    async (action: ChatAction) => {
-      switch (action.type) {
-        case "remove_profiles":
-          // TODO: Remove people from workspace state when backend supports it
-          break;
-        case "apply_filters":
-          // TODO: Apply filter state when filter UI exists on workspace
-          break;
-        case "run_targeted_search":
-        case "regroup_journals":
-          // Reload workspace data from backend to get updated state
-          try {
-            const updated = await fetchWorkspace(state.data.workspace_id);
-            dispatch({ type: "UPDATE_DATA", data: updated });
-            // Update positions for any new journals
-            for (const j of updated.journals) {
-              if (!state.positions[j.id]) {
-                dispatch({ type: "MOVE_NODE", journalId: j.id, x: j.canvas_x, y: j.canvas_y });
-              }
-            }
-          } catch {
-            // Ignore reload errors
-          }
-          break;
-      }
-    },
-    [state.data.workspace_id, state.positions],
-  );
-
   return (
     <div className="h-screen w-full relative">
       <WorkspaceHeader
@@ -313,24 +276,10 @@ export function WorkspaceView({ initialData, overlaps }: WorkspaceViewProps) {
         totalPeople={state.data.total_people}
       />
 
-      {/* Agent panel */}
-      <AgentPanel
-        workspaceId={state.data.workspace_id}
-        workspaceQuery={state.data.query}
-        workspaceSummary={state.data.summary}
-        journals={state.data.journals}
-        totalPeople={state.data.total_people}
-        activeJournalId={state.openJournalId}
-        isOpen={state.chatOpen}
-        onToggle={() => dispatch({ type: "TOGGLE_CHAT" })}
-        onAction={handleChatAction}
-      />
-
-      {/* Canvas container — shifts right when agent panel is open */}
+      {/* Canvas container */}
       <div
         ref={containerRef}
-        className="absolute inset-0 overflow-hidden cursor-grab transition-[left] duration-300"
-        style={{ left: state.chatOpen ? 380 : 0 }}
+        className="absolute inset-0 overflow-hidden cursor-grab"
         onPointerDown={handleCanvasPointerDown}
         onPointerMove={handleCanvasPointerMove}
         onPointerUp={handleCanvasPointerUp}

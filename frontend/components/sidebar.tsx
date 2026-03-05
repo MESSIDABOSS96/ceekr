@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { SquarePen, Search, PanelLeftClose, PanelLeftOpen, User } from "lucide-react";
+import { SquarePen, Search, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { fetchWorkspaces } from "@/lib/api";
 import { groupByDate, relativeTime } from "@/lib/date-utils";
@@ -181,21 +181,6 @@ export function Sidebar({ onNewSearch }: SidebarProps) {
         )}
       </ScrollArea>
 
-      {/* Separator */}
-      <div className="mx-2 border-t border-border-subtle" />
-
-      {/* Account section */}
-      <div className="p-2">
-        <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/10">
-            <User className="h-3.5 w-3.5 text-text-secondary" />
-          </div>
-          <div className="flex flex-col min-w-0">
-            <span className="text-sm text-text-primary truncate">Guest</span>
-            <span className="text-xs text-text-muted">Sign in</span>
-          </div>
-        </div>
-      </div>
     </>
   );
 

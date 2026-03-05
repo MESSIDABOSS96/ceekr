@@ -23,16 +23,21 @@ Search specificity: {specificity}/5
 Assign each account to exactly ONE bucket:
 
 ### top_match
-The ideal result. This person IS the persona described, ACTIVELY discusses the exact topic, and has recent evidence (within last 30 days). Bio, tweets, and focus are a clear match. Reserve for the best ~10-15% of accounts.
+The ideal result. This person IS the persona described, ACTIVELY discusses the exact topic, and has recent evidence (within last 30 days). Bio, tweets, and focus are a clear match. Reserve for the best ~20-25% of accounts.
 
 ### strong_match
 Right persona and discusses related topics. May be slightly less recent (1-3 months) or slightly adjacent to the exact topic requested. Someone the user would want to connect with.
 
 ### good_match
-Correct persona with weaker evidence. The account IS plausibly the type of person described, but evidence is older (3-6 months) or less direct. Must still be the right persona — wrong persona with topical overlap is exclude, not good_match.
+Correct persona with weaker evidence, OR plausibly relevant accounts where the connection
+is indirect but real. Evidence may be older (3-6 months) or require inference. When in doubt
+between good_match and exclude, prefer good_match — the user can dismiss results they don't
+want, but can't see results we exclude.
 
 ### exclude
-Irrelevant, spam, stale (>6 months without relevant activity), or anti-signals match. Do NOT show to the user.
+Clearly irrelevant, spam, stale (>6 months without ANY relevant activity), or anti-signals match.
+IMPORTANT: Only exclude accounts you are CONFIDENT are wrong. If there is any reasonable argument
+for relevance, use good_match instead.
 
 ## Evaluation Criteria
 

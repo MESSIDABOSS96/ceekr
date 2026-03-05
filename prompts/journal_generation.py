@@ -54,12 +54,15 @@ def format_journal_generation_prompt(
     example_groups: list[str],
 ) -> str:
     examples_str = ", ".join(f'"{g}"' for g in example_groups) if example_groups else "use your judgment"
-    return f"""You are organizing Twitter search results into meaningful groups called "journals."
+    return f"""You are organizing Twitter search results into meaningful groups called "journals" to directly serve the user's goal.
 
 ## Search Context
 - **Looking for**: {intent.persona}
 - **Topic**: {intent.topic}
 - **Goal**: {intent.goal}
+
+## Goal-Driven Grouping
+The user's GOAL determines how labels should read. Journal labels must help the user achieve their stated goal — not just categorize people generically. Generic labels like role seniority or thought leadership are almost never useful.
 
 ## Grouping Axis
 Group ONLY along: **{axis_label}**

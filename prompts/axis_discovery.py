@@ -47,7 +47,7 @@ AXIS_DISCOVERY_TOOL = {
 
 
 def format_axis_discovery_prompt(intent: SearchIntent, enriched_accounts: str) -> str:
-    return f"""You are analyzing search results to find the best ways to group these people.
+    return f"""You are analyzing search results to find the best ways to group these people to serve the user's goal.
 
 ## Search Context
 - **Looking for**: {intent.persona}
@@ -57,6 +57,13 @@ def format_axis_discovery_prompt(intent: SearchIntent, enriched_accounts: str) -
 ## People Found
 {enriched_accounts}
 
+## Axis Selection Priority
+The user's GOAL determines the best axis. Ask: "What grouping would help this person achieve their goal?"
+- Goal: "understand what types of companies YC is funding" → axis: "By company vertical" (AI, Fintech, DevTools)
+- Goal: "find people to hire for my ML team" → axis: "By specialization" (NLP, Computer Vision, MLOps)
+- Goal: "network with founders in my city" → axis: "By stage/focus" (Pre-seed, Series A, B2B SaaS)
+The axis should answer the user's question, not just categorize people generically.
+
 ## Task
 Discover 2-4 meaningful **grouping axes**. Each axis is a SINGLE dimension that slices ALL people into distinct groups.
 
@@ -65,8 +72,8 @@ Rules:
 - Example groups within an axis must be mutually exclusive — every person fits in exactly one group per axis.
 - Axes should be different from each other (don't propose "by role" and "by job title" — those are the same dimension).
 - Choose axes that create balanced groups (avoid axes where 80% of people would land in one group).
-- Prefer axes that are actionable and useful for the searcher's goal.
+- CRITICAL: Axes and labels must help the user achieve their stated goal. Generic categorizations like role seniority or thought leadership are almost never useful. Use concrete, goal-grounded labels.
 
-Pick the axis that creates the most balanced, distinct, and actionable grouping as the recommended default.
+Pick the axis that best serves the user's goal as the recommended default.
 
 Use the discover_axes tool."""

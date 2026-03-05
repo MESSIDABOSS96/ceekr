@@ -45,15 +45,15 @@ def is_oauth_configured() -> bool:
 
 # Search settings
 MIN_QUERIES = 3  # Minimum search queries (high specificity)
-MAX_QUERIES = 7  # Maximum search queries (low specificity)
-TWEETS_PER_QUERY = 50  # Number of tweets to fetch per query
+MAX_QUERIES = 10  # Maximum search queries (low specificity)
+TWEETS_PER_QUERY = 100  # Number of tweets to fetch per query
 
 # Pre-filter thresholds
 MIN_FOLLOWERS_THRESHOLD = 10
 BOT_KEYWORDS = ["bot", "auto", "giveaway", "airdrop", "free followers", "follow back"]
 
 # Ranking
-RANKING_BATCH_SIZE = 40
+RANKING_BATCH_SIZE = 60
 MAX_TWEETS_FOR_RANKING = 3  # tweets sent to LLM per account
 MAX_TWEET_LENGTH = 150  # chars per tweet
 MAX_BIO_LENGTH = 150  # chars for bio

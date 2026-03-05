@@ -257,7 +257,7 @@ class LLMClient:
 
                 specificity = result.get("specificity", 3)
                 # Dynamic query count: broad → more queries, specific → fewer
-                specificity_to_count = {1: 7, 2: 6, 3: 6, 4: 5, 5: 4}
+                specificity_to_count = {1: 10, 2: 9, 3: 8, 4: 6, 5: 5}
                 query_count = specificity_to_count.get(specificity, 5)
 
                 time_constraint = result.get("time_constraint") or None

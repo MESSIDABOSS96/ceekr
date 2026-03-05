@@ -86,8 +86,6 @@ export function JournalNode({
     [onOpen, onDragEnd],
   );
 
-  const titleOpacity = scale < 0.45 ? 0 : scale < 0.55 ? (scale - 0.45) / 0.1 : 1;
-
   return (
     <div
       ref={nodeRef}
@@ -113,7 +111,7 @@ export function JournalNode({
         <div className="flex-1 min-h-0 px-3 py-2.5 flex flex-col gap-1">
           <p
             className="font-semibold text-text-primary line-clamp-2 leading-tight text-[13px]"
-            style={{ opacity: titleOpacity, transition: "opacity 150ms" }}
+
           >
             {journal.label}
           </p>

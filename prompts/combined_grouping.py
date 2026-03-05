@@ -80,10 +80,10 @@ COMBINED_GROUPING_TOOL = {
 
 def format_combined_grouping_prompt(intent: SearchIntent, enriched_accounts: str) -> str:
     key_signals_str = ", ".join(intent.key_signals) if intent.key_signals else "none"
-    return f"""You are organizing Twitter search results for a user. Do TWO things in one pass:
+    return f"""You are organizing Twitter search results to directly serve the user's goal. Do TWO things in one pass:
 
-**Part 1 — Discover grouping axes:** Find 2-4 meaningful dimensions that could slice these people into groups.
-**Part 2 — Generate journals:** Pick the BEST axis and actually cluster people into journals along it.
+**Part 1 — Discover grouping axes:** Find 2-4 dimensions that would help the user achieve their goal.
+**Part 2 — Generate journals:** Pick the BEST axis and cluster people into journals along it.
 
 ## Search Context
 - **Looking for**: {intent.persona}
@@ -95,12 +95,27 @@ def format_combined_grouping_prompt(intent: SearchIntent, enriched_accounts: str
 ## People Found
 {enriched_accounts}
 
+## Axis Selection Priority
+The user's GOAL determines the best axis. Ask: "What grouping would help this person achieve their goal?"
+- Goal: "understand what types of companies YC is funding" → axis: "By company vertical" (AI, Fintech, DevTools)
+- Goal: "find people to hire for my ML team" → axis: "By specialization" (NLP, Computer Vision, MLOps)
+- Goal: "network with founders in my city" → axis: "By stage/focus" (Pre-seed, Series A, B2B SaaS)
+The axis should answer the user's question, not just categorize people generically.
+
 ## Axis Discovery Rules
 - Each axis is a SINGLE coherent dimension (e.g. "role", "topic focus", "geography").
 - Axes must be different from each other.
 - Choose axes that create balanced groups (avoid 80% in one group).
-- Prefer axes that are actionable and useful for the searcher's goal.
-- CRITICAL: Axes and journal labels must directly relate to "{intent.topic}" and "{intent.goal}". Do NOT generate abstract/generic labels like "Strategic Thought Leaders" — use concrete, intent-grounded labels like "YC W24 Batch" or "AI/ML Founders".
+- CRITICAL: The axes and journal labels must help the user achieve their stated goal. Generic categorizations like role seniority or thought leadership are almost never useful. Use concrete, goal-grounded labels like "YC W24 Batch" or "AI/ML Founders", NOT abstract labels like "Strategic Thought Leaders" or "Community Builders".
+
+## Examples (good vs bad)
+Search: "YC founders" | Goal: "understand what YC is funding right now"
+✓ "AI Infrastructure", "Fintech & Payments", "Developer Tools", "Health Tech"
+✗ "Strategic Thought Leaders", "Early-Stage Innovators", "Community Builders"
+
+Search: "ML engineers" | Goal: "hire for my NLP team"
+✓ "NLP & Language Models", "Computer Vision", "MLOps & Infra"
+✗ "Senior Practitioners", "Rising Stars", "Industry Veterans"
 
 ## Journal Generation Rules (apply to the recommended axis)
 - Every person in AT MOST one journal. No duplicates. You MAY omit people who don't clearly match the search persona "{intent.persona}".
