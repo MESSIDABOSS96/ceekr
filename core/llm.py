@@ -1105,20 +1105,36 @@ The following accounts have already been evaluated in a previous batch. Use them
         # Convert messages to Anthropic format
         api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
 
-        async with self.client.messages.stream(
-            model=self.model,
-            max_tokens=1024,
-            system=system_prompt,
-            tools=WORKSPACE_CHAT_TOOLS,
-            messages=api_messages,
-        ) as stream:
-            async for event in stream:
-                if event.type == "content_block_delta":
-                    if hasattr(event.delta, "text"):
-                        yield {"type": "token", "text": event.delta.text}
+        # Manual retry loop — can't use @retry on async generators
+        response = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                async with self.client.messages.stream(
+                    model=self.model,
+                    max_tokens=1024,
+                    system=system_prompt,
+                    tools=WORKSPACE_CHAT_TOOLS,
+                    messages=api_messages,
+                ) as stream:
+                    async for event in stream:
+                        if event.type == "content_block_delta":
+                            if hasattr(event.delta, "text"):
+                                yield {"type": "token", "text": event.delta.text}
 
-            # Extract final message for tool use (must be inside async with)
-            response = await stream.get_final_message()
+                    # Extract final message for tool use (must be inside async with)
+                    response = await stream.get_final_message()
+                last_error = None
+                break
+            except anthropic.APIStatusError as e:
+                if e.status_code in (429, 529, 503) and attempt < 2:
+                    last_error = e
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                raise
+
+        if last_error:
+            raise last_error
 
         for block in response.content:
             if block.type == "tool_use":

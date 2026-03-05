@@ -50,6 +50,12 @@ export function DotGridBackground({ subtle = false, magnify = true }: DotGridBac
 
     // Mouse tracking
     const onMouseMove = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest?.("[data-suppress-magnify]")) {
+        mouseX = null;
+        mouseY = null;
+        return;
+      }
       mouseX = e.clientX;
       mouseY = e.clientY;
     };

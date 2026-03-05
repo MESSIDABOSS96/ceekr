@@ -134,6 +134,7 @@ export function AgentPanel({
       abortRef.current = controller;
 
       let accumulated = "";
+      let hadError = false;
 
       await streamChat(
         workspaceId,
@@ -148,8 +149,7 @@ export function AgentPanel({
             onAction(action);
           },
           onDone: () => {
-            // Finalize the assistant message
-            if (accumulated) {
+            if (!hadError && accumulated) {
               const assistantMsg: ChatMessage = {
                 id: `temp-${Date.now()}-a`,
                 role: "assistant",
@@ -163,6 +163,16 @@ export function AgentPanel({
             abortRef.current = null;
           },
           onError: (msg) => {
+            hadError = true;
+            if (accumulated) {
+              const partialMsg: ChatMessage = {
+                id: `temp-${Date.now()}-p`,
+                role: "assistant",
+                content: accumulated,
+                created_at: new Date().toISOString(),
+              };
+              setMessages((prev) => [...prev, partialMsg]);
+            }
             const errorMsg: ChatMessage = {
               id: `temp-${Date.now()}-e`,
               role: "assistant",
@@ -171,8 +181,6 @@ export function AgentPanel({
             };
             setMessages((prev) => [...prev, errorMsg]);
             setStreamText("");
-            setStreaming(false);
-            abortRef.current = null;
           },
         },
         controller.signal,

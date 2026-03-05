@@ -497,7 +497,7 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
               searching={isSearching}
               loading={isChecking}
             />
-            {(isSearching || state.phase === "results") && state.activitySteps.length > 0 && (
+            {(isSearching || state.phase === "results") && (
               <ThinkingPanel
                 steps={state.activitySteps}
                 progress={getSearchProgress(state)}
@@ -572,7 +572,7 @@ export function SearchPage({ initialState, onSearchComplete, onWorkspaceCreated,
               />
             )}
 
-            {isSearching && state.activitySteps.length > 0 && (
+            {isSearching && (
               <ThinkingPanel
                 steps={state.activitySteps}
                 progress={getSearchProgress(state)}

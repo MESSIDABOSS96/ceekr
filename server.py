@@ -1,5 +1,7 @@
 """FastAPI backend for Twitter Account Finder."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import traceback
@@ -783,7 +785,12 @@ async def workspace_chat(workspace_id: str, request: Request):
 
         except Exception as e:
             traceback.print_exc()
-            yield {"event": "error", "data": json.dumps({"message": str(e)})}
+            msg = str(e)
+            if "overloaded" in msg.lower() or "529" in msg:
+                msg = "Claude is temporarily overloaded. Please try again in a moment."
+            elif "rate_limit" in msg.lower() or "429" in msg:
+                msg = "Rate limit reached. Please wait a moment and try again."
+            yield {"event": "error", "data": json.dumps({"message": msg})}
 
     return EventSourceResponse(event_stream(), ping=15)
 

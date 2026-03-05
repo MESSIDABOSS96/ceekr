@@ -1,5 +1,7 @@
 """Workspace orchestrator — runs search pipeline then clusters into journals."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import math

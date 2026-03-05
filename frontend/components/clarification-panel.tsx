@@ -57,9 +57,9 @@ export function ClarificationPanel({
 
   return (
     <div className="mt-4 animate-in fade-in slide-in-from-top-2 duration-300">
-      <div className="rounded-2xl border border-white/[0.08] bg-surface-card px-6 py-5">
+      <div data-suppress-magnify className="rounded-2xl border border-white/[0.08] bg-surface-card px-6 py-5">
         <p className="mb-4 text-sm text-text-secondary">
-          A few details would help narrow this down
+          A few details for better results
         </p>
 
         <div className="space-y-4">
@@ -85,7 +85,7 @@ export function ClarificationPanel({
           <button
             type="button"
             onClick={handleSubmit}
-            className="flex items-center gap-2 rounded-full bg-accent px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 rounded-full bg-accent px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent/90 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             disabled={!hasAnyAnswer}
           >
             Search
